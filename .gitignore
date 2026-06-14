@@ -20,6 +20,8 @@ real/*video*
 real/rh20t_vis
 slurm_out
 *.pyc
+restore_data
+rawdata
 real/droid_sc
 real/droid_point_world
 droid_point_world/

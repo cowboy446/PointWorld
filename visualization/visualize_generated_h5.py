@@ -15,13 +15,18 @@ from __future__ import annotations
 
 import argparse
 import random
-import sys
 from pathlib import Path
 from typing import Sequence
 
 import cv2
 import h5py
 import numpy as np
+
+import os
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
 
 import transform_utils
 
@@ -713,9 +718,10 @@ def main() -> None:
     with h5py.File(chosen_h5, "r") as h5_file:
         clip_names = sorted([k for k in h5_file.keys() if isinstance(h5_file[k], h5py.Group)])
     chosen_clip = _choose_clip_key(clip_names, args.clip_key, rng)
-
+    print(f"Selected H5 file: {chosen_h5}")
     sample_dict, domain, camera_keys = _build_sample_dict(chosen_h5, chosen_clip)
-
+    print(f"Selected clip: {chosen_clip} with domain '{domain}' and cameras: {camera_keys}")
+    import pdb; pdb.set_trace()
     config = PredictionVisualizerConfig()
     config.viewer_host = str(args.viewer_host)
     config.viewer_port = int(args.viewer_port)
