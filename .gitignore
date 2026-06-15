@@ -21,6 +21,8 @@ mppi_logs/
 *.mp4
 *.out
 *wandb/
+rawdata
+restore_data
 debug/
 .vscode/
 backbone-ckpt/
