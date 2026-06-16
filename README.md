@@ -92,8 +92,8 @@ Recommended setup:
 
 ```bash
 # from repo root
-conda env create -n pointworld-env -f environments/train_eval.yml
-conda activate pointworld-env
+conda env create -n pointwm -f environments/train_eval.yml
+conda activate pointwm
 # used by the dataset/checkpoint download commands below
 python -m pip install huggingface_hub==0.26.2
 # timm is used for PTv3 DropPath; install without pulling extra transitive deps
