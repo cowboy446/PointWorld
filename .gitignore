@@ -82,7 +82,7 @@ IMG_*
 *.npy
 .dockerignore
 b1k/BEHAVIOR-1K/
-eval_logs/
+# eval_logs/
 og_synthetic/ReKep/
 labeling/tri-droid-recalibration
 logs
