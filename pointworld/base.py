@@ -37,6 +37,21 @@ SIM_DOMAIN_KEYWORDS = ["behavior"]
 PTV3_DROP_PATH = 0.3
 _PTV3_BLUEPRINT = None
 
+ROBOT_FEATURE_DIMS = {
+    "robot_flows": 3,
+    "robot_colors": 3,
+    "robot_normals": 3,
+    "robot_velocity": 3,
+    "robot_acceleration": 3,
+}
+
+SCENE_FEATURE_DIMS = {
+    "scene_flows": 3,
+    "scene_colors": 3,
+    "scene_normals": 3,
+    "dist2robot": CONTEXT_HORIZON + PRED_HORIZON,
+}
+
 
 def _load_ptv3_blueprint():
     global _PTV3_BLUEPRINT
@@ -148,6 +163,84 @@ def _resolve_stride(value, enc_depths: tuple) -> tuple:
     if isinstance(value, list):
         return tuple(int(v) for v in value)
     raise TypeError("PTV3 stride must be 'auto' or a list of ints")
+
+
+def _robot_gripper_dim(feature_names: list[str], total_dim: int) -> int:
+    known_dim = sum(ROBOT_FEATURE_DIMS.get(name, 0) for name in feature_names if name != "gripper_open")
+    if "gripper_open" not in feature_names:
+        return 0
+    return max(0, int(total_dim) - known_dim)
+
+
+def _robot_selected_dim(feature_names: list[str], total_dim: int, use_gripper_open: bool) -> int:
+    total_dim = int(total_dim)
+    if use_gripper_open or "gripper_open" not in feature_names:
+        return total_dim
+    return total_dim - _robot_gripper_dim(feature_names, total_dim)
+
+
+def _robot_feature_indices(feature_names: list[str], total_dim: int, use_gripper_open: bool) -> torch.Tensor:
+    """Return indices into a runtime robot feature tensor.
+
+    The release data order is controlled by args.robot_features. Checkpoint-only
+    inference may infer total_dim from model weights, in which case gripper_open
+    can already be absent; when so, returning all indices keeps compatibility.
+    """
+    total_dim = int(total_dim)
+    known_without_gripper = sum(
+        ROBOT_FEATURE_DIMS.get(name, 0) for name in feature_names if name != "gripper_open"
+    )
+    if use_gripper_open or "gripper_open" not in feature_names or total_dim <= known_without_gripper:
+        return torch.arange(total_dim, dtype=torch.long)
+
+    indices: list[int] = []
+    offset = 0
+    gripper_dim = total_dim - known_without_gripper
+    for name in feature_names:
+        dim = gripper_dim if name == "gripper_open" else ROBOT_FEATURE_DIMS[name]
+        if name != "gripper_open":
+            indices.extend(range(offset, offset + dim))
+        offset += dim
+    return torch.tensor(indices, dtype=torch.long)
+
+
+def _scene_gripper_dim(feature_names: list[str], total_dim: int) -> int:
+    known_dim = sum(SCENE_FEATURE_DIMS.get(name, 0) for name in feature_names if name != "gripper_open")
+    if "gripper_open" not in feature_names:
+        return 0
+    return max(0, int(total_dim) - known_dim)
+
+
+def _scene_selected_dim(feature_names: list[str], total_dim: int, use_gripper_open: bool) -> int:
+    total_dim = int(total_dim)
+    if use_gripper_open or "gripper_open" not in feature_names:
+        return total_dim
+    return total_dim - _scene_gripper_dim(feature_names, total_dim)
+
+
+def _scene_feature_indices(feature_names: list[str], total_dim: int, use_gripper_open: bool) -> torch.Tensor:
+    """Return indices into the runtime scene raw feature tensor.
+
+    The release scene feature order is controlled by args.scene_features. If a
+    checkpoint already uses a no-gripper scene projection, total_dim can equal
+    the known non-gripper dimension; in that case all indices are kept.
+    """
+    total_dim = int(total_dim)
+    known_without_gripper = sum(
+        SCENE_FEATURE_DIMS.get(name, 0) for name in feature_names if name != "gripper_open"
+    )
+    if use_gripper_open or "gripper_open" not in feature_names or total_dim <= known_without_gripper:
+        return torch.arange(total_dim, dtype=torch.long)
+
+    indices: list[int] = []
+    offset = 0
+    gripper_dim = total_dim - known_without_gripper
+    for name in feature_names:
+        dim = gripper_dim if name == "gripper_open" else SCENE_FEATURE_DIMS[name]
+        if name != "gripper_open":
+            indices.extend(range(offset, offset + dim))
+        offset += dim
+    return torch.tensor(indices, dtype=torch.long)
 
 
 def build_ptv3(channels, args):
@@ -344,16 +437,29 @@ class BaseModel(nn.Module):
         self.world_size = dist.get_world_size() if args.distributed else 1
         self.channels = args.predictor_dim
         self.cpu_pg = cpu_pg
+        self.robot_features_dim = _robot_selected_dim(
+            args.robot_features,
+            data_info_dict['robot_features_dim'],
+            args.robot_use_gripper_open_feature,
+        )
+        self.scene_features_dim = _scene_selected_dim(
+            args.scene_features,
+            data_info_dict['scene_features_dim'],
+            args.robot_use_gripper_open_feature,
+        )
+        model_data_info_dict = dict(data_info_dict)
+        model_data_info_dict['robot_features_dim'] = self.robot_features_dim
+        model_data_info_dict['scene_features_dim'] = self.scene_features_dim
         # ---------------------------- scene encoder ---------------------------- #
         self.scene_feature_encoder = SceneFeatureEncoder(
             args,
             self.channels,
-            data_info_dict,
+            model_data_info_dict,
             rank,
             self.normalize_scene_features,
         )
 
-        self.robot_proj = MLP(data_info_dict['robot_features_dim'], self.channels, self.channels)
+        self.robot_proj = MLP(self.robot_features_dim, self.channels, self.channels)
         self.time_embed = TemporalEmbedding(self.channels)
         self.robot_type_emb = nn.Parameter(torch.zeros(1, self.channels))
         self.register_buffer("time_steps", torch.linspace(0, 1, self.T))
@@ -402,19 +508,26 @@ class BaseModel(nn.Module):
         )
 
     def normalize_robot_features(self, robot_features):
+        indices = self._robot_feature_indices_for_dim(self.robot_norm_mean.shape[-1])
+        robot_mean = self.robot_norm_mean.index_select(-1, indices)
+        robot_var = self.robot_norm_var.index_select(-1, indices)
         return norm_stats_utils.normalize_robot_features(
             robot_features,
             self._current_domain_indices,
-            self.robot_norm_mean,
-            self.robot_norm_var,
+            robot_mean,
+            robot_var,
         )
         
     def normalize_scene_features(self, scene_features):
+        indices = self._scene_feature_indices_for_dim(self.scene_norm_mean.shape[-1])
+        scene_mean = self.scene_norm_mean.index_select(-1, indices)
+        scene_var = self.scene_norm_var.index_select(-1, indices)
+        scene_features = self._select_scene_features(scene_features)
         return norm_stats_utils.normalize_scene_features(
             scene_features,
             self._current_domain_indices,
-            self.scene_norm_mean,
-            self.scene_norm_var,
+            scene_mean,
+            scene_var,
         )
     
     def encode_scene_features(self, data_dict):
@@ -429,6 +542,30 @@ class BaseModel(nn.Module):
             )
 
         return self.scene_feature_encoder(data_dict)
+
+    def _robot_feature_indices_for_dim(self, feature_dim: int) -> torch.Tensor:
+        indices = _robot_feature_indices(
+            self.args.robot_features,
+            feature_dim,
+            self.args.robot_use_gripper_open_feature,
+        )
+        return indices.to(device=self.device)
+
+    def _select_robot_features(self, robot_features: torch.Tensor) -> torch.Tensor:
+        indices = self._robot_feature_indices_for_dim(robot_features.shape[-1])
+        return robot_features.index_select(-1, indices)
+
+    def _scene_feature_indices_for_dim(self, feature_dim: int) -> torch.Tensor:
+        indices = _scene_feature_indices(
+            self.args.scene_features,
+            feature_dim,
+            self.args.robot_use_gripper_open_feature,
+        )
+        return indices.to(device=self.device)
+
+    def _select_scene_features(self, scene_features: torch.Tensor) -> torch.Tensor:
+        indices = self._scene_feature_indices_for_dim(scene_features.shape[-1])
+        return scene_features.index_select(-1, indices)
 
     # ------------------------------------------------------------------ #
     def forward(self, data_dict, training=True, encoded_scene_feat0=None):
@@ -465,6 +602,7 @@ class BaseModel(nn.Module):
             scene_feat0 = self.encode_scene_features(data_dict)
         
         # ---------------------------- robot features ---------------------------- #
+        robot_feat_seq = self._select_robot_features(robot_feat_seq)
         robot_feat_seq = self.normalize_robot_features(robot_feat_seq)
         with torch.autocast('cuda', enabled=False):  # TODO: see if this resolves nan issue
             robot_raw = self.robot_proj(robot_feat_seq)  # (B, T, Nr, C)

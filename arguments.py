@@ -63,6 +63,23 @@ def parse_optional_int(value, arg_name: str):
     return parsed
 
 
+def parse_int_list(value, arg_name: str):
+    """Parse a comma-separated int list. 'none' or '' returns an empty list."""
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return [int(v) for v in value]
+    if not isinstance(value, str):
+        raise ValueError(f"{arg_name} must be a comma-separated list of ints or 'none'")
+    value = value.strip()
+    if value == "" or value.lower() == "none":
+        return []
+    try:
+        return [int(v.strip()) for v in value.split(",") if v.strip()]
+    except ValueError as exc:
+        raise ValueError(f"{arg_name} must be a comma-separated list of ints, got {value!r}") from exc
+
+
 def _collect_explicit_cli_dests(parser: ArgumentParser, argv: list[str]) -> set[str]:
     option_to_dest = {}
     for action in parser._actions:
@@ -146,7 +163,13 @@ def parse_args(skip_command_line=False):
     parser.add_argument('--grid_size', '-gs', type=float, default=0.015)
     # normalization
     parser.add_argument('--norm_stats_path', type=str, default='stats/droid', help='Path to folder containing precomputed JSON files with normalization statistics')
-    # scene encoder (release: fixed to DINOv3 ViT-L16 multi-layer 2D)
+    # scene encoder / ablation controls
+    parser.add_argument('--scene_use_dino', type=str, default='true',
+                        help='Use DINOv3 2D scene features. Set false to use only raw scene features.')
+    parser.add_argument('--scene_dino_layers', type=str, default='4,11,17,23',
+                        help="Comma-separated DINOv3 intermediate layers. Use 'none' with --scene_use_dino=false.")
+    parser.add_argument('--robot_use_gripper_open_feature', type=str, default='true',
+                        help='Use gripper_open in model-consumed robot and scene raw feature vectors.')
     # compile / performance controls
     parser.add_argument('--disable_compile', type=str, default='false', help='Disable torch.compile for inference-only paths')
     # robot + deployment options: selection handled via deploy/robots.py (ROBOT_TYPE)
@@ -222,6 +245,12 @@ def parse_args(skip_command_line=False):
             "--eval_min_num_cameras must be <= --eval_max_num_cameras "
             f"(got {args.eval_min_num_cameras} > {args.eval_max_num_cameras})"
         )
+    args.scene_dino_layers = parse_int_list(args.scene_dino_layers, "--scene_dino_layers")
+    if args.scene_use_dino and not args.scene_dino_layers:
+        raise ValueError("--scene_dino_layers cannot be empty when --scene_use_dino=true")
+    if any(layer < 0 or layer > 23 for layer in args.scene_dino_layers):
+        raise ValueError(f"--scene_dino_layers must be in [0, 23], got {args.scene_dino_layers}")
+
     # convert comma separated strings to lists
     args.robot_features = [name.strip() for name in args.robot_features.split(',')]
     args.scene_features = [name.strip() for name in args.scene_features.split(',')]

@@ -28,7 +28,8 @@ class SceneEncoder2D(nn.Module):
         self.channels = channels
         self.repo_root = Path(__file__).resolve().parent
         
-        # Fixed DINOv3 ViT-L16 multi-layer configuration for release.
+        # DINOv3 ViT-L16 multi-layer configuration. The ablation branch lets
+        # callers choose which intermediate layers to concatenate.
         self.model_name = "dinov3_vitl16"
         repo, source = self._resolve_dinov3_repo()
         self.model_config = {
@@ -39,7 +40,9 @@ class SceneEncoder2D(nn.Module):
         }
         self.feat_dim = self.model_config['feat_dim']
 
-        self.selected_layers = [4, 11, 17, 23]
+        self.selected_layers = list(args.scene_dino_layers)
+        if not self.selected_layers:
+            raise ValueError("SceneEncoder2D requires at least one DINO layer.")
         in_dim = self.feat_dim * len(self.selected_layers)
         
         # ---------- backbone ----------
@@ -368,11 +371,15 @@ class SceneFeatureEncoder(nn.Module):
         super().__init__()
         self.args = args
         self.normalize_scene_features = normalize_scene_features_fn
-        self.scene_encoder = SceneEncoder2D(args, channels, data_info_dict, rank)
+        self.use_dino = bool(args.scene_use_dino)
+        self.scene_encoder = (
+            SceneEncoder2D(args, channels, data_info_dict, rank)
+            if self.use_dino else None
+        )
         self.scene_raw_feat_proj = nn.Linear(data_info_dict["scene_features_dim"], channels)
-        self.scene_encoder_norm = nn.LayerNorm(channels)
+        self.scene_encoder_norm = nn.LayerNorm(channels) if self.use_dino else None
         self.scene_raw_norm = nn.LayerNorm(channels)
-        self.scene_proj = nn.Linear(channels * 2, channels)
+        self.scene_proj = nn.Linear(channels * 2, channels) if self.use_dino else nn.Identity()
 
     def forward(self, data_dict):
         scene_coord0 = data_dict["scene_flows"][:, 0]  # (B, Ns, 3)
@@ -381,14 +388,18 @@ class SceneFeatureEncoder(nn.Module):
 
         scene_feat0 = self.normalize_scene_features(scene_feat0)
 
+        raw_scene_feat0 = self.scene_raw_norm(self.scene_raw_feat_proj(scene_feat0))
+        if not self.use_dino:
+            return self.scene_proj(raw_scene_feat0)
+
         camera_data = self.scene_encoder._extract_camera_data(data_dict)
         backbone_scene_feat0 = self.scene_encoder(scene_coord0, scene_exists0, camera_data)
         backbone_scene_feat0 = backbone_scene_feat0.to(scene_feat0.dtype)
-        scene_feat0 = torch.cat(
+        fused_scene_feat0 = torch.cat(
             [
                 self.scene_encoder_norm(backbone_scene_feat0),
-                self.scene_raw_norm(self.scene_raw_feat_proj(scene_feat0)),
+                raw_scene_feat0,
             ],
             dim=-1,
         )
-        return self.scene_proj(scene_feat0)
+        return self.scene_proj(fused_scene_feat0)

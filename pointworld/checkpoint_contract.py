@@ -36,6 +36,9 @@ MODEL_CONTRACT_KEYS = (
     "train_max_num_cameras",
     "eval_min_num_cameras",
     "eval_max_num_cameras",
+    "scene_use_dino",
+    "scene_dino_layers",
+    "robot_use_gripper_open_feature",
 )
 
 # Published schema-v1 checkpoints were prepared before these camera-count
@@ -45,6 +48,9 @@ LEGACY_MODEL_CONTRACT_DEFAULTS = {
     "train_max_num_cameras": 3,
     "eval_min_num_cameras": 2,
     "eval_max_num_cameras": 2,
+    "scene_use_dino": True,
+    "scene_dino_layers": [4, 11, 17, 23],
+    "robot_use_gripper_open_feature": True,
 }
 
 DATA_CONTRACT_KEYS = (
@@ -55,6 +61,31 @@ def _cast_optional_int(value: Any) -> int | None:
     if value is None:
         return None
     return int(value)
+
+
+def _cast_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.lower()
+        if lowered in ("true", "t", "yes", "y", "1"):
+            return True
+        if lowered in ("false", "f", "no", "n", "0"):
+            return False
+    return bool(value)
+
+
+def _cast_int_list(value: Any) -> list[int]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = value.strip()
+        if value == "" or value.lower() == "none":
+            return []
+        return [int(v.strip()) for v in value.split(",") if v.strip()]
+    if isinstance(value, (list, tuple)):
+        return [int(v) for v in value]
+    raise TypeError(f"Expected list/tuple/string for int list, got {type(value).__name__}")
 
 
 _MODEL_CASTERS = {
@@ -70,6 +101,9 @@ _MODEL_CASTERS = {
     "train_max_num_cameras": _cast_optional_int,
     "eval_min_num_cameras": int,
     "eval_max_num_cameras": int,
+    "scene_use_dino": _cast_bool,
+    "scene_dino_layers": _cast_int_list,
+    "robot_use_gripper_open_feature": _cast_bool,
 }
 
 _MODEL_ARG_FALLBACKS = {
