@@ -36,8 +36,11 @@ MODEL_CONTRACT_KEYS = (
     "train_max_num_cameras",
     "eval_min_num_cameras",
     "eval_max_num_cameras",
-    "scene_use_dino",
+    "scene_use_2d_backbone",
+    "scene_2d_backbone",
     "scene_dino_layers",
+    "scene_siglip_model",
+    "scene_siglip_layer",
     "robot_use_gripper_open_feature",
 )
 
@@ -48,8 +51,11 @@ LEGACY_MODEL_CONTRACT_DEFAULTS = {
     "train_max_num_cameras": 3,
     "eval_min_num_cameras": 2,
     "eval_max_num_cameras": 2,
-    "scene_use_dino": True,
+    "scene_use_2d_backbone": True,
+    "scene_2d_backbone": "dinov3",
     "scene_dino_layers": [4, 11, 17, 23],
+    "scene_siglip_model": "google/siglip2-base-patch16-256",
+    "scene_siglip_layer": -1,
     "robot_use_gripper_open_feature": True,
 }
 
@@ -101,14 +107,18 @@ _MODEL_CASTERS = {
     "train_max_num_cameras": _cast_optional_int,
     "eval_min_num_cameras": int,
     "eval_max_num_cameras": int,
-    "scene_use_dino": _cast_bool,
+    "scene_use_2d_backbone": _cast_bool,
+    "scene_2d_backbone": str,
     "scene_dino_layers": _cast_int_list,
+    "scene_siglip_model": str,
+    "scene_siglip_layer": int,
     "robot_use_gripper_open_feature": _cast_bool,
 }
 
 _MODEL_ARG_FALLBACKS = {
     "max_scene_points": ("max_scene_particles",),
     "max_robot_points": ("max_robot_particles",),
+    "scene_use_2d_backbone": ("scene_use_dino",),
 }
 
 def _args_to_mapping(args: Any, context: str) -> Mapping[str, Any]:
@@ -148,6 +158,8 @@ def _extract_model_value(args_map: Mapping[str, Any], key: str, context: str) ->
 
 def _validate_model_contract(model_contract: Mapping[str, Any], context: str) -> dict[str, Any]:
     normalized_contract = dict(model_contract)
+    if "scene_use_2d_backbone" not in normalized_contract and "scene_use_dino" in normalized_contract:
+        normalized_contract["scene_use_2d_backbone"] = normalized_contract["scene_use_dino"]
     missing = [k for k in MODEL_CONTRACT_KEYS if k not in normalized_contract]
     if missing:
         unsupported_missing = [k for k in missing if k not in LEGACY_MODEL_CONTRACT_DEFAULTS]
@@ -277,6 +289,8 @@ def apply_model_contract_to_args(
         if current_value != target_value:
             setattr(args, key, target_value)
             changed.append(key)
+    if hasattr(args, "scene_use_2d_backbone"):
+        setattr(args, "scene_use_dino", getattr(args, "scene_use_2d_backbone"))
     return changed
 
 

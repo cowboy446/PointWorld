@@ -144,3 +144,7 @@ stats/refactor_*
 !third_party/
 !third_party/dinov3/
 !third_party/dinov3/**
+!third_party/siglip/
+!third_party/siglip/**
+third_party/siglip/checkpoints/**
+!third_party/siglip/checkpoints/.gitkeep

@@ -17,6 +17,7 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from third_party.siglip.siglip2_features import Siglip2FeatureConfig, Siglip2FeatureExtractor
 
 class SceneEncoder2D(nn.Module):
     """DINOv3-based 2-D scene encoder that projects 3-D points to camera views."""
@@ -39,6 +40,7 @@ class SceneEncoder2D(nn.Module):
             'weights': self._resolve_dinov3_weights('dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth'),
         }
         self.feat_dim = self.model_config['feat_dim']
+        self.patch_size = 16
 
         self.selected_layers = list(args.scene_dino_layers)
         if not self.selected_layers:
@@ -129,6 +131,19 @@ class SceneEncoder2D(nn.Module):
             p.requires_grad_(False)
         self.dinov3.eval()
 
+    def _extract_patch_tokens(self, rgb_input, patch_h, patch_w):
+        feats = self.dinov3.get_intermediate_layers(
+            rgb_input,
+            n=self.selected_layers,
+            reshape=False,
+            return_class_token=False,
+        )
+        patch_tokens = torch.cat(feats, dim=-1)
+        n_patches = patch_h * patch_w
+        if patch_tokens.shape[1] != n_patches:
+            patch_tokens = patch_tokens[:, -n_patches:, :]
+        return patch_tokens
+
     @staticmethod
     def _stack_camera_tensors(camera_data, key):
         """camera_data[prefix][key] -> (B, C, ...)"""
@@ -171,31 +186,18 @@ class SceneEncoder2D(nn.Module):
         _, _, H, W, _ = rgb.shape
 
         # ============ 2.  Backbone features for all views (no chunking) ============
-        # DINOv3 ViT-L16 path (fixed for release).
+        # Frozen ViT path.
         rgb_flat = rgb.view(B * C, H, W, 3)  # (B*C, H, W, 3)
         rgb_input = rgb_flat.permute(0, 3, 1, 2).float() / 255.  # (B*C, 3, H, W)
-        patch_size = 16
+        patch_size = self.patch_size
         patch_h = H // patch_size
         patch_w = W // patch_size
         rgb_backbone_input = rgb_input  # keep original resolution
         
-        # Apply ImageNet normalization (fixed for release).
-        mean = torch.tensor([0.485, 0.456, 0.406], device=rgb_backbone_input.device, dtype=rgb_backbone_input.dtype).view(1, 3, 1, 1)
-        std = torch.tensor([0.229, 0.224, 0.225], device=rgb_backbone_input.device, dtype=rgb_backbone_input.dtype).view(1, 3, 1, 1)
-        rgb_backbone_input = (rgb_backbone_input - mean) / std
+        rgb_backbone_input = self._normalize_backbone_input(rgb_backbone_input)
         
         def _extract_features():
-            feats = self.dinov3.get_intermediate_layers(
-                rgb_backbone_input,              # (B*C, 3, H, W)
-                n=self.selected_layers,          # list of ints as keyword arg
-                reshape=False,                   # keep (B*C, tokens, C)
-                return_class_token=False)        # only patch tokens
-            patch_tokens = torch.cat(feats, dim=-1)
-            # Guard against register tokens: keep only trailing patch tokens if present
-            n_patches = patch_h * patch_w
-            if patch_tokens.shape[1] != n_patches:
-                patch_tokens = patch_tokens[:, -n_patches:, :]
-            return patch_tokens
+            return self._extract_patch_tokens(rgb_backbone_input, patch_h, patch_w)
 
         features_or_tokens = self._maybe_no_grad(_extract_features)
         
@@ -326,6 +328,11 @@ class SceneEncoder2D(nn.Module):
     def _maybe_no_grad(self, fn):
         with torch.no_grad():
             return fn()
+
+    def _normalize_backbone_input(self, rgb_input):
+        mean = torch.tensor([0.485, 0.456, 0.406], device=rgb_input.device, dtype=rgb_input.dtype).view(1, 3, 1, 1)
+        std = torch.tensor([0.229, 0.224, 0.225], device=rgb_input.device, dtype=rgb_input.dtype).view(1, 3, 1, 1)
+        return (rgb_input - mean) / std
     
     # --------------------------------------------------------------------------
     # API compatibility methods for profiling and debugging
@@ -365,21 +372,75 @@ class SceneEncoder2D(nn.Module):
         return camera_data
     
 
+class SiglipSceneEncoder2D(SceneEncoder2D):
+    """SigLIP2-based 2-D scene encoder using the DINO projection/sampling path."""
+
+    def __init__(self, args, channels, data_info_dict, rank: int = 0):
+        nn.Module.__init__(self)
+        self.args = args
+        self.rank = rank
+        self.device = args.device
+        self.channels = channels
+        self.repo_root = Path(__file__).resolve().parent
+        self.model_name = args.scene_siglip_model
+        self.siglip = Siglip2FeatureExtractor(
+            Siglip2FeatureConfig(
+                model_name=args.scene_siglip_model,
+                layer=args.scene_siglip_layer,
+            ),
+            device=args.device,
+        )
+        self.feat_dim = self.siglip.hidden_size
+        self.patch_size = self.siglip.patch_size
+        self.feat_proj = nn.Linear(self.feat_dim, channels)
+        self._freeze_encoder()
+        if not args.disable_compile:
+            self._maybe_no_grad = torch.compile(self._maybe_no_grad)
+
+    def _freeze_encoder(self):
+        for p in self.siglip.parameters():
+            p.requires_grad_(False)
+        self.siglip.eval()
+
+    def _normalize_backbone_input(self, rgb_input):
+        return rgb_input
+
+    def _extract_patch_tokens(self, rgb_input, patch_h, patch_w):
+        return self.siglip.extract_patch_tokens(rgb_input)
+
+
+def _resolve_scene_2d_backbones(args) -> list[str]:
+    if not bool(getattr(args, "scene_use_2d_backbone", getattr(args, "scene_use_dino", True))):
+        return []
+    names = [name.strip() for name in str(args.scene_2d_backbone).split("+") if name.strip()]
+    valid = {"dinov3", "siglip"}
+    if not names or any(name not in valid for name in names):
+        raise ValueError(
+            f"Unsupported scene_2d_backbone={args.scene_2d_backbone!r}; "
+            "expected dinov3, siglip, or dinov3+siglip."
+        )
+    return names
+
 
 class SceneFeatureEncoder(nn.Module):
     def __init__(self, args, channels, data_info_dict, rank, normalize_scene_features_fn):
         super().__init__()
         self.args = args
         self.normalize_scene_features = normalize_scene_features_fn
-        self.use_dino = bool(args.scene_use_dino)
-        self.scene_encoder = (
-            SceneEncoder2D(args, channels, data_info_dict, rank)
-            if self.use_dino else None
-        )
+        self.backbone_names = _resolve_scene_2d_backbones(args)
+        self.scene_encoders = nn.ModuleDict()
+        for name in self.backbone_names:
+            if name == "dinov3":
+                self.scene_encoders[name] = SceneEncoder2D(args, channels, data_info_dict, rank)
+            elif name == "siglip":
+                self.scene_encoders[name] = SiglipSceneEncoder2D(args, channels, data_info_dict, rank)
         self.scene_raw_feat_proj = nn.Linear(data_info_dict["scene_features_dim"], channels)
-        self.scene_encoder_norm = nn.LayerNorm(channels) if self.use_dino else None
+        self.scene_encoder_norms = nn.ModuleDict(
+            {name: nn.LayerNorm(channels) for name in self.backbone_names}
+        )
         self.scene_raw_norm = nn.LayerNorm(channels)
-        self.scene_proj = nn.Linear(channels * 2, channels) if self.use_dino else nn.Identity()
+        in_channels = channels * (1 + len(self.backbone_names))
+        self.scene_proj = nn.Linear(in_channels, channels) if self.backbone_names else nn.Identity()
 
     def forward(self, data_dict):
         scene_coord0 = data_dict["scene_flows"][:, 0]  # (B, Ns, 3)
@@ -389,17 +450,16 @@ class SceneFeatureEncoder(nn.Module):
         scene_feat0 = self.normalize_scene_features(scene_feat0)
 
         raw_scene_feat0 = self.scene_raw_norm(self.scene_raw_feat_proj(scene_feat0))
-        if not self.use_dino:
+        if not self.backbone_names:
             return self.scene_proj(raw_scene_feat0)
 
-        camera_data = self.scene_encoder._extract_camera_data(data_dict)
-        backbone_scene_feat0 = self.scene_encoder(scene_coord0, scene_exists0, camera_data)
-        backbone_scene_feat0 = backbone_scene_feat0.to(scene_feat0.dtype)
-        fused_scene_feat0 = torch.cat(
-            [
-                self.scene_encoder_norm(backbone_scene_feat0),
-                raw_scene_feat0,
-            ],
-            dim=-1,
-        )
+        first_encoder = self.scene_encoders[self.backbone_names[0]]
+        camera_data = first_encoder._extract_camera_data(data_dict)
+        features = []
+        for name in self.backbone_names:
+            backbone_scene_feat0 = self.scene_encoders[name](scene_coord0, scene_exists0, camera_data)
+            backbone_scene_feat0 = backbone_scene_feat0.to(scene_feat0.dtype)
+            features.append(self.scene_encoder_norms[name](backbone_scene_feat0))
+        features.append(raw_scene_feat0)
+        fused_scene_feat0 = torch.cat(features, dim=-1)
         return self.scene_proj(fused_scene_feat0)

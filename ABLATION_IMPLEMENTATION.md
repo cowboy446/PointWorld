@@ -24,20 +24,21 @@
 - 对 DROID 单臂，默认 scene raw feature dim 约为 `21`，禁用后模型消费维度约为 `20`。
 - 对双臂，`gripper_open` 可能是 2 维；实现通过 `total_dim - known_non_gripper_dim` 分别推断 robot / scene gripper 维度。
 
-### `--scene_use_dino`
+### `--scene_use_2d_backbone`
 
 默认：`true`
 
-- `true`：使用 DINOv3 2D feature，与 raw scene feature concat 后投影到 `predictor_dim`。
-- `false`：完全不加载 DINOv3 submodule / checkpoint，只用 raw scene features 投影到 `predictor_dim`。
+- `true`：使用配置的 2D backbone feature，与 raw scene feature concat 后投影到 `predictor_dim`。
+- `false`：完全不加载 2D visual backbone，只用 raw scene features 投影到 `predictor_dim`。
+- `--scene_use_dino` 是旧名兼容 alias。
 
 ### `--scene_dino_layers`
 
 默认：`4,11,17,23`
 
 - 可设置为任意 DINOv3 ViT-L/16 intermediate layer 列表，例如 `--scene_dino_layers=23` 或 `--scene_dino_layers=11,23`。
-- 如果 `--scene_use_dino=true`，该列表不能为空。
-- 如果要不用 DINO，推荐显式写：`--scene_use_dino=false --scene_dino_layers=none`。
+- 如果 `--scene_use_2d_backbone=true` 且使用 DINO，该列表不能为空。
+- 如果要不用 2D backbone，推荐显式写：`--scene_use_2d_backbone=false --scene_dino_layers=none`。
 
 ## 维度设计
 
@@ -53,7 +54,7 @@
 ## 改动文件
 
 - `arguments.py`
-  - 新增 `--scene_use_dino`
+  - 新增 `--scene_use_2d_backbone`，并保留 `--scene_use_dino` 作为兼容 alias
   - 新增 `--scene_dino_layers`
   - 新增 `--robot_use_gripper_open_feature`
   - 新增 DINO layer list parser / validation
@@ -62,7 +63,7 @@
   - legacy checkpoint 默认回填 release 行为
 - `scene_featurizer.py`
   - DINO layers 从 args 读取
-  - 支持 `scene_use_dino=false` 时跳过 DINO 加载
+  - 支持 `scene_use_2d_backbone=false` 时跳过 2D backbone 加载
   - no-DINO 时只返回 raw scene projection
 - `pointworld/base.py`
   - 增加 robot / scene feature dim / index helper
@@ -76,7 +77,7 @@
 默认参数：
 
 ```bash
---scene_use_dino=true
+--scene_use_2d_backbone=true
 --scene_dino_layers=4,11,17,23
 --robot_use_gripper_open_feature=true
 ```
@@ -107,7 +108,7 @@ python -m compileall arguments.py scene_featurizer.py pointworld/base.py pointwo
 python - <<'PY'
 from arguments import parse_args
 args = parse_args(skip_command_line=True)
-print(args.scene_use_dino, args.scene_dino_layers, args.robot_use_gripper_open_feature)
+print(args.scene_use_2d_backbone, args.scene_dino_layers, args.robot_use_gripper_open_feature)
 PY
 ```
 
@@ -125,9 +126,9 @@ import sys
 from arguments import parse_args
 old = sys.argv
 try:
-    sys.argv = ['prog', '--scene_use_dino=false', '--scene_dino_layers=none', '--robot_use_gripper_open_feature=false']
+    sys.argv = ['prog', '--scene_use_2d_backbone=false', '--scene_dino_layers=none', '--robot_use_gripper_open_feature=false']
     args = parse_args()
-    print(args.scene_use_dino, args.scene_dino_layers, args.robot_use_gripper_open_feature)
+    print(args.scene_use_2d_backbone, args.scene_dino_layers, args.robot_use_gripper_open_feature)
 finally:
     sys.argv = old
 PY
@@ -188,13 +189,13 @@ indices drop gripper, dim22: [0, 1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 13, 14, 15, 16,
 Scene raw projection dim check:
 
 ```bash
-conda run -n pointwm python -c "from types import SimpleNamespace; from scene_featurizer import SceneFeatureEncoder; args=SimpleNamespace(scene_use_dino=False, scene_dino_layers=[], disable_compile=True); enc=SceneFeatureEncoder(args, 128, {'scene_features_dim':20}, 0, lambda x:x); print(tuple(enc.scene_raw_feat_proj.weight.shape), type(enc.scene_proj).__name__, enc.scene_encoder is None)"
+conda run -n pointwm python -c "from types import SimpleNamespace; from scene_featurizer import SceneFeatureEncoder; args=SimpleNamespace(scene_use_2d_backbone=False, scene_2d_backbone='dinov3', scene_dino_layers=[], disable_compile=True); enc=SceneFeatureEncoder(args, 128, {'scene_features_dim':20}, 0, lambda x:x); print(tuple(enc.scene_raw_feat_proj.weight.shape), type(enc.scene_proj).__name__, enc.backbone_names)"
 ```
 
 输出：
 
 ```text
-(128, 20) Identity True
+(128, 20) Identity []
 ```
 
 未完成：
@@ -209,8 +210,8 @@ conda run -n pointwm python -c "from types import SimpleNamespace; from scene_fe
 2. no gripper raw feature：`--robot_use_gripper_open_feature=false`。
 3. DINO last layer only：`--scene_dino_layers=23`。
 4. DINO two layers：`--scene_dino_layers=11,23`。
-5. no DINO：`--scene_use_dino=false --scene_dino_layers=none`。
-6. no DINO + no robot gripper：组合 ablation。
+5. no 2D backbone：`--scene_use_2d_backbone=false --scene_dino_layers=none`。
+6. no 2D backbone + no robot gripper：组合 ablation。
 
 每组都应报告：
 

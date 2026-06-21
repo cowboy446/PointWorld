@@ -164,14 +164,28 @@ def parse_args(skip_command_line=False):
     # normalization
     parser.add_argument('--norm_stats_path', type=str, default='stats/droid', help='Path to folder containing precomputed JSON files with normalization statistics')
     # scene encoder / ablation controls
-    parser.add_argument('--scene_use_dino', type=str, default='true',
-                        help='Use DINOv3 2D scene features. Set false to use only raw scene features.')
+    parser.add_argument('--scene_use_2d_backbone', '--scene_use_dino', type=str, default='true',
+                        help='Use 2D scene features. Set false to use only raw scene features. '
+                             '--scene_use_dino is a deprecated alias.')
+    parser.add_argument('--scene_2d_backbone', type=str, default='dinov3',
+                        choices=['dinov3', 'siglip', 'dinov3+siglip'],
+                        help='2D scene feature backbone(s) to fuse with raw scene features.')
     parser.add_argument('--scene_dino_layers', type=str, default='4,11,17,23',
-                        help="Comma-separated DINOv3 intermediate layers. Use 'none' with --scene_use_dino=false.")
+                        help="Comma-separated DINOv3 intermediate layers. Use 'none' with --scene_use_2d_backbone=false.")
+    parser.add_argument('--scene_siglip_model', type=str, default='google/siglip2-base-patch16-256',
+                        help='Hugging Face SigLIP/SigLIP2 model for scene 2D features.')
+    parser.add_argument('--scene_siglip_layer', type=int, default=-1,
+                        help='SigLIP vision hidden-state layer to use (-1 = final output).')
     parser.add_argument('--robot_use_gripper_open_feature', type=str, default='true',
                         help='Use gripper_open in model-consumed robot and scene raw feature vectors.')
     # compile / performance controls
     parser.add_argument('--disable_compile', type=str, default='false', help='Disable torch.compile for inference-only paths')
+    parser.add_argument('--log_scene_rgb_to_wandb', type=str, default='false',
+                        help='Save and log the sampled cam*_initial_rgb images used by the 2D scene backbone during training.')
+    parser.add_argument('--scene_rgb_log_freq', type=int, default=100,
+                        help='Log sampled scene RGB inputs every N training steps when --log_scene_rgb_to_wandb=true.')
+    parser.add_argument('--scene_rgb_log_max_images', type=int, default=4,
+                        help='Maximum number of RGB images to save/log per logging event.')
     # robot + deployment options: selection handled via deploy/robots.py (ROBOT_TYPE)
     # ----- DINOv3 aggregation options (fixed) -----
     parser.add_argument('--depth_threshold', '-dt', type=float, default=0.003, help='Depth threshold for visibility mask')
@@ -246,8 +260,10 @@ def parse_args(skip_command_line=False):
             f"(got {args.eval_min_num_cameras} > {args.eval_max_num_cameras})"
         )
     args.scene_dino_layers = parse_int_list(args.scene_dino_layers, "--scene_dino_layers")
-    if args.scene_use_dino and not args.scene_dino_layers:
-        raise ValueError("--scene_dino_layers cannot be empty when --scene_use_dino=true")
+    # Backward-compatible attribute for older helper scripts/checkpoints.
+    args.scene_use_dino = args.scene_use_2d_backbone
+    if args.scene_use_2d_backbone and 'dinov3' in args.scene_2d_backbone and not args.scene_dino_layers:
+        raise ValueError("--scene_dino_layers cannot be empty when --scene_use_2d_backbone=true")
     if any(layer < 0 or layer > 23 for layer in args.scene_dino_layers):
         raise ValueError(f"--scene_dino_layers must be in [0, 23], got {args.scene_dino_layers}")
 
@@ -298,6 +314,10 @@ def parse_args(skip_command_line=False):
         raise ValueError("--max_train_steps must be positive or -1")
     if args.max_train_steps < -1:
         raise ValueError("--max_train_steps must be -1 or a positive integer")
+    if args.scene_rgb_log_freq < 1:
+        raise ValueError(f"--scene_rgb_log_freq must be >= 1, got {args.scene_rgb_log_freq}")
+    if args.scene_rgb_log_max_images < 1:
+        raise ValueError(f"--scene_rgb_log_max_images must be >= 1, got {args.scene_rgb_log_max_images}")
 
     if args.train_splits is not None:
         train_splits = [split.strip() for split in args.train_splits.split(',') if split.strip()]

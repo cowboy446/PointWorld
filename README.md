@@ -133,6 +133,34 @@ wget -O third_party/dinov3/checkpoints/<dinov3_vitl16_pretrain_*.pth> \
   "<URL_FROM_DINOV3_ACCESS_EMAIL>"
 ```
 
+### Optional SigLIP2 Scene Backbone
+
+The `siglip` branch can use Hugging Face SigLIP2 features as an alternative or
+addition to DINOv3:
+
+```bash
+pip install -r environments/requirements.txt
+bash third_party/siglip/download_siglip2.sh
+```
+
+Modes:
+
+```bash
+--scene_2d_backbone=dinov3
+--scene_2d_backbone=siglip
+--scene_2d_backbone=dinov3+siglip
+```
+
+See [SIGLIP_INTEGRATION.md](SIGLIP_INTEGRATION.md) for the implementation notes
+and the one-image feature-map visualization command.
+
+To log the actual selected `cam*_initial_rgb` images consumed by DINOv3/SigLIP2
+during training, add:
+
+```bash
+--log_scene_rgb_to_wandb=true --scene_rgb_log_freq=100 --scene_rgb_log_max_images=4
+```
+
 ### Dataset Path Convention
 
 Use this directory layout for generated datasets consumed by `main`:
@@ -431,6 +459,7 @@ Third-party OSS attribution and license references for distributed or adapted co
 | Repository / Project | Usage in this repo | License |
 |---|---|---|
 | [facebookresearch/dinov3](https://github.com/facebookresearch/dinov3) | Scene encoder backbone submodule (`third_party/dinov3/`) | [DINOv3 License](third_party/dinov3/LICENSE.md) |
+| [google/siglip2](https://huggingface.co/collections/google/siglip2) via Hugging Face Transformers | Optional SigLIP2 scene encoder adapter (`third_party/siglip/`) | [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0) for local adapter code; model terms follow the checkpoint card |
 | [Pointcept/PointTransformerV3](https://github.com/Pointcept/PointTransformerV3) | Vendored/adapted PTv3 components (`ptv3/`) | [MIT](ptv3/LICENSE) |
 | [facebookresearch/sonata](https://github.com/facebookresearch/sonata) | PTv3 lineage reference for adapted components | [Apache-2.0](https://github.com/facebookresearch/sonata/blob/main/LICENSE) |
 | [StanfordVL/OmniGibson](https://github.com/StanfordVL/OmniGibson) | Adapted transform utilities (`transform_utils.py`) | [MIT](https://github.com/StanfordVL/OmniGibson/blob/main/LICENSE) |

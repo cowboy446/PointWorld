@@ -15,6 +15,7 @@
 
 import json
 import os
+import re
 import subprocess
 import time
 import torch
@@ -34,6 +35,7 @@ import sys
 import traceback
 import numpy as np
 import math
+from PIL import Image
 from pointworld.base import BaseModel
 from pointworld.checkpoint_contract import apply_model_contract_to_args, read_checkpoint_contract
 from training import checkpointing as checkpointing_utils
@@ -148,11 +150,22 @@ class Trainer:
         # ----------------------------------------------------------------------------------
         if self.rank == 0:
             total_params = sum(p.numel() for p in self.model.parameters())
+            model_for_logging = self.model.module if isinstance(self.model, DDP) else self.model
             log_dict = {
                 "model/total_params": total_params,
+                "model/robot_use_gripper_open_feature": bool(self.args.robot_use_gripper_open_feature),
+                "model/robot_features_dim": int(model_for_logging.robot_features_dim),
+                "model/scene_features_dim": int(model_for_logging.scene_features_dim),
+                "data/robot_features_dim_raw": int(data_info_dict["robot_features_dim"]),
+                "data/scene_features_dim_raw": int(data_info_dict["scene_features_dim"]),
+                "model/scene_use_2d_backbone": bool(self.args.scene_use_2d_backbone),
+                "model/scene_2d_backbone": self.args.scene_2d_backbone if self.args.scene_use_2d_backbone else "none",
+                "model/scene_siglip_model": getattr(self.args, "scene_siglip_model", ""),
+                "model/scene_siglip_layer": getattr(self.args, "scene_siglip_layer", -1),
             }
             for k, v in data_info_dict.items():
-                log_dict[f'model/{k}'] = v
+                if k not in {"robot_features_dim", "scene_features_dim"}:
+                    log_dict[f'data/{k}'] = v
             for k, v in log_dict.items():
                 _print(f'{k:<30}: {v}')
             _print(f'{"Experiment Name":<30}: {self.exp_name}')
@@ -161,6 +174,7 @@ class Trainer:
         
         # Initialize consecutive NaN grad norm counter
         self.consecutive_nan_grad_count = 0
+        self.scene_rgb_debug_dir = os.path.join(self.save_dir, "scene_rgb_inputs")
 
     def setup_save_dir(self, exp_name=None):
         self.log_dir = self.args.log_dir
@@ -363,6 +377,66 @@ class Trainer:
         """Helper function for cadence checks."""
         return action_freq > 0 and (curr_batch - last_batch >= action_freq)
 
+    def _rgb_tensor_to_uint8_numpy(self, rgb_tensor: torch.Tensor) -> np.ndarray:
+        rgb = rgb_tensor.detach().cpu()
+        if rgb.dtype.is_floating_point:
+            if float(rgb.max()) <= 1.0:
+                rgb = rgb * 255.0
+            rgb = rgb.clamp(0, 255).to(torch.uint8)
+        elif rgb.dtype != torch.uint8:
+            rgb = rgb.clamp(0, 255).to(torch.uint8)
+        return rgb.numpy()
+
+    def _log_scene_rgb_inputs(self, batch, adjusted_batch_count: int) -> None:
+        if not getattr(self.args, "log_scene_rgb_to_wandb", False):
+            return
+        if self.rank != 0:
+            return
+        if adjusted_batch_count % self.args.scene_rgb_log_freq != 0:
+            return
+
+        camera_keys = sorted(
+            key for key in batch.keys()
+            if re.fullmatch(r"cam\d+_initial_rgb", key)
+        )
+        if not camera_keys:
+            return
+
+        os.makedirs(self.scene_rgb_debug_dir, exist_ok=True)
+        images = []
+        saved_paths = []
+        max_images = int(self.args.scene_rgb_log_max_images)
+        for camera_key in camera_keys:
+            rgb_batch = batch[camera_key]
+            exists_key = camera_key.replace("_initial_rgb", "_exists")
+            exists = batch.get(exists_key)
+            batch_size = int(rgb_batch.shape[0])
+            for batch_idx in range(batch_size):
+                if exists is not None and not bool(exists[batch_idx].detach().cpu().item()):
+                    continue
+                rgb_np = self._rgb_tensor_to_uint8_numpy(rgb_batch[batch_idx])
+                filename = f"step_{adjusted_batch_count:08d}_{camera_key}_b{batch_idx}.png"
+                path = os.path.join(self.scene_rgb_debug_dir, filename)
+                Image.fromarray(rgb_np).save(path)
+                caption = f"step={adjusted_batch_count} {camera_key} batch={batch_idx}"
+                images.append(wandb.Image(rgb_np, caption=caption))
+                saved_paths.append(path)
+                if len(images) >= max_images:
+                    break
+            if len(images) >= max_images:
+                break
+
+        if images:
+            wandb.log({
+                "debug/scene_rgb_inputs": images,
+                "debug/scene_rgb_input_count": len(images),
+                "debug/scene_rgb_input_dir": self.scene_rgb_debug_dir,
+            }, step=adjusted_batch_count)
+            _print(
+                f"Saved/logged {len(images)} scene RGB backbone input images "
+                f"for step {adjusted_batch_count} under {self.scene_rgb_debug_dir}"
+            )
+
     def train(self):
 
         # Only call GradScaler if AMP
@@ -432,6 +506,7 @@ class Trainer:
 
                 self.model.train()
                 train_batch = {k: v.to(self.device, non_blocking=True) if isinstance(v, torch.Tensor) else v for k, v in train_batch.items()}
+                self._log_scene_rgb_inputs(train_batch, adjusted_batch_count)
 
                 self.optimizer.zero_grad(set_to_none=True)
 

@@ -29,13 +29,13 @@
 
 - `--robot_use_gripper_open_feature=true|false`：历史命名保留，但语义是全局控制 robot 与 scene raw feature 是否消费 `gripper_open`。
 - `--scene_dino_layers=4,11,17,23`
-- `--scene_use_dino=true|false`
+- `--scene_use_2d_backbone=true|false`
 
 内部处理：
 
 - `arguments.py` 解析并校验 DINO layer 列表。
 - `pointworld/base.py` 根据实际启用的 feature names 切片 `robot_features` / `scene_features` 和两路 norm stats，再建立对应输入维度的 projection。
-- `scene_featurizer.py` 根据 `scene_use_dino` 和 `scene_dino_layers` 决定是否加载 DINOv3，以及 DINO feature projection 的输入维度。
+- `scene_featurizer.py` 根据 `scene_use_2d_backbone`、`scene_2d_backbone` 和 `scene_dino_layers` 决定是否加载 2D backbone，以及对应 feature projection 的输入维度。
 - `SceneFeatureEncoder` 在 DINO 关闭时只使用 raw scene feature projection；DINO 开启时保持 raw+DINO concat 后投影。
 
 ## 测试限制
