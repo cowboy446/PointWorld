@@ -450,7 +450,6 @@ class BaseModel(nn.Module):
         model_data_info_dict = dict(data_info_dict)
         model_data_info_dict['robot_features_dim'] = self.robot_features_dim
         model_data_info_dict['scene_features_dim'] = self.scene_features_dim
-        import pdb; pdb.set_trace()
         # ---------------------------- scene encoder ---------------------------- #
         self.scene_feature_encoder = SceneFeatureEncoder(
             args,
