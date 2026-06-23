@@ -34,6 +34,7 @@ BEHAVIOR_HF_REPO = "2025-challenge-rawdata"
 HF_DATASET_URL_RE = re.compile(
     r"^https?://huggingface\.co/datasets/(?P<org>[^/]+)/(?P<repo>[^/]+)/(?P<mode>resolve|blob|raw)/(?P<rev>[^/]+)/(?P<file>.+)$"
 )
+HDF5_MAGIC = b"\x89HDF\r\n\x1a\n"
 
 
 def is_hf_path(path: str) -> bool:
@@ -113,15 +114,22 @@ def get_local_behavior_input_path(input_path: str, temp_dir: str | None = None) 
     if cache_root:
         local_path = os.path.join(cache_root, "behavior", f"{org}__{repo}", revision, file_path)
         if os.path.isfile(local_path):
+            if not _has_hdf5_signature(local_path):
+                print(f"[behavior raw cache] removing invalid cached HDF5: {local_path}")
+                os.remove(local_path)
+            else:
+                return local_path
+        if not os.path.isfile(local_path):
+            _download_hf_file(resolve_url, local_path, token)
+            _validate_hdf5_signature(local_path, resolve_url)
             return local_path
-        _download_hf_file(resolve_url, local_path, token)
-        return local_path
 
     if temp_dir is None:
         temp_dir = tempfile.mkdtemp(prefix="behavior_raw_stream_")
     local_path = os.path.join(temp_dir, os.path.basename(file_path))
     if not os.path.isfile(local_path):
         _download_hf_file(resolve_url, local_path, token)
+        _validate_hdf5_signature(local_path, resolve_url)
     return local_path
 
 
@@ -182,6 +190,25 @@ def _extract_hf_parts(path: str) -> tuple[str, str, str, str]:
         raise ValueError(f"Could not parse Hugging Face dataset URL: {path}")
     info = match.groupdict()
     return info["org"], info["repo"], info["rev"], info["file"]
+
+
+def _has_hdf5_signature(path: str) -> bool:
+    try:
+        with open(path, "rb") as f:
+            return f.read(len(HDF5_MAGIC)) == HDF5_MAGIC
+    except OSError:
+        return False
+
+
+def _validate_hdf5_signature(path: str, source_url: str) -> None:
+    if _has_hdf5_signature(path):
+        return
+    if os.path.exists(path):
+        os.remove(path)
+    raise RuntimeError(
+        "Downloaded BEHAVIOR raw episode is not a valid HDF5 file. "
+        f"Removed invalid file: {path}. Source: {source_url}"
+    )
 
 
 def _download_hf_file(url: str, local_path: str, token: str | None) -> None:

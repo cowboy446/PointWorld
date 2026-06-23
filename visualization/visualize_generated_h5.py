@@ -721,7 +721,7 @@ def main() -> None:
     print(f"Selected H5 file: {chosen_h5}")
     sample_dict, domain, camera_keys = _build_sample_dict(chosen_h5, chosen_clip)
     print(f"Selected clip: {chosen_clip} with domain '{domain}' and cameras: {camera_keys}")
-    import pdb; pdb.set_trace()
+    # import pdb; pdb.set_trace()
     config = PredictionVisualizerConfig()
     config.viewer_host = str(args.viewer_host)
     config.viewer_port = int(args.viewer_port)

@@ -20,7 +20,8 @@ real/*video*
 real/rh20t_vis
 slurm_out
 *.pyc
-restore_data
+restore_data/
+.cache/
 rawdata
 real/droid_sc
 real/droid_point_world
@@ -70,7 +71,8 @@ IMG_*
 *.npy
 .dockerignore
 simulation/behavior/BEHAVIOR-1K/
-eval_log/
+eval_logs/
+train_logs/
 og_synthetic/ReKep/
 real/tri-droid-recalibration
 logs
