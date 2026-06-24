@@ -56,6 +56,7 @@
 
 - `install_gaussian_cuda.sh`
   - 初始化 graphdeco rasterizer submodule。
+  - 自动从 `torch.cuda.get_device_capability()` 检测 `TORCH_CUDA_ARCH_LIST`；也可以手动用环境变量覆盖。
   - 如果系统已有 `nvcc`，直接使用本机 CUDA 编译器，避免离线服务器访问 NVIDIA conda channel。
   - 如果系统没有 `nvcc`，在 `pointwm` conda 环境中安装 CUDA 12.4 nvcc/CCCL headers。
   - 用 `--no-build-isolation` 编译安装 `diff_gaussian_rasterization`。

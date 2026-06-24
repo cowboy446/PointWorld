@@ -2,7 +2,13 @@
 set -euo pipefail
 
 CONDA_ENV="${CONDA_ENV:-pointwm}"
-ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-8.6}"
+
+if [[ -n "${TORCH_CUDA_ARCH_LIST:-}" ]]; then
+  ARCH_LIST="${TORCH_CUDA_ARCH_LIST}"
+else
+  ARCH_LIST="$(conda run -n "${CONDA_ENV}" python -c 'import torch; major, minor = torch.cuda.get_device_capability(); print(f"{major}.{minor}")')"
+fi
+echo "Using TORCH_CUDA_ARCH_LIST=${ARCH_LIST}"
 
 git submodule update --init --recursive third_party/diff-gaussian-rasterization
 
