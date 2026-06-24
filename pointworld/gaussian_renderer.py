@@ -281,13 +281,25 @@ def render_single_view_diff_gaussian(
             if device.type == "cuda":
                 torch.cuda.empty_cache()
             print(
-                "Warning: diff-gaussian rasterizer OOM for one view; skipping this view "
+                "Warning: diff-gaussian rasterizer OOM for one view; falling back to torch renderer "
                 f"(valid_gaussians={int(means_v.shape[0])}, "
                 f"max_scale={float(scales_v.detach().max().item()) if scales_v.numel() else 0.0:.6g}, "
                 f"min_depth={float(depth[valid].detach().min().item()) if valid.any() else 0.0:.6g}, "
                 f"max_screen_radius={float(max_screen_radius):.3g})."
             )
-            return _empty_render(device, height, width)
+            return render_single_view(
+                means,
+                sh0,
+                scales,
+                opacity,
+                intrinsic,
+                extrinsic,
+                height,
+                width,
+                exists=exists,
+                mask_points=mask_points,
+                patch_radius=patch_radius,
+            )
     if mask_points is None:
         mask_points = means
     mask = _projection_mask_from_points(
