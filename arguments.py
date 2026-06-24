@@ -158,6 +158,37 @@ def parse_args(skip_command_line=False):
     parser.add_argument('--predictor_dim', '-pd', type=int, default=256, help='Dimension of predictor')
     # loss
     parser.add_argument('--huber_delta', '-hdl', type=float, default=5.0, help='Delta for huber loss')
+    # Gaussian splatting supervision
+    parser.add_argument('--enable_gaussian_splatting', type=str, default='false',
+                        help='Enable per-scene-point 3DGS attribute prediction and frame-0 image supervision.')
+    parser.add_argument('--gaussian_loss_weight', type=float, default=1.0,
+                        help='Weight for the frame-0 differentiable Gaussian render loss.')
+    parser.add_argument('--gaussian_ssim_weight', type=float, default=0.2,
+                        help='D-SSIM mixing weight in the Gaussian image loss; 0.2 follows the 3DGS objective.')
+    parser.add_argument('--gaussian_use_projection_mask', type=str, default='false',
+                        help='If true, supervise only pixels where frame-0 scene points project; otherwise supervise the full image.')
+    parser.add_argument('--gaussian_patch_radius', type=int, default=2,
+                        help='Projection-mask radius in pixels; default 2 marks a 5x5 window around each projected scene point.')
+    parser.add_argument('--gaussian_renderer_backend', type=str, default='diff_gaussian',
+                        help="Gaussian renderer backend: 'diff_gaussian' for graphdeco CUDA, 'torch' for fallback, or 'auto'.")
+    parser.add_argument('--gaussian_znear', type=float, default=0.01,
+                        help='Near plane for the CUDA Gaussian rasterizer.')
+    parser.add_argument('--gaussian_zfar', type=float, default=100.0,
+                        help='Far plane for the CUDA Gaussian rasterizer.')
+    parser.add_argument('--gaussian_init_scale', type=float, default=0.01,
+                        help='Initial 3D Gaussian scale in world units.')
+    parser.add_argument('--gaussian_min_scale', type=float, default=1e-4,
+                        help='Minimum positive 3D Gaussian scale in world units.')
+    parser.add_argument('--gaussian_init_opacity', type=float, default=0.1,
+                        help='Initial Gaussian opacity before sigmoid parameterization.')
+    parser.add_argument('--gaussian_delta_mu_max', type=float, default=0.03,
+                        help='Maximum absolute center offset predicted from each scene point.')
+    parser.add_argument('--gaussian_train_save_freq', type=int, default=-1,
+                        help='Save Gaussian training renders every N train steps; <=0 disables train saves.')
+    parser.add_argument('--gaussian_eval_save', type=str, default='true',
+                        help='Save Gaussian renders during train-time eval and eval.py.')
+    parser.add_argument('--gaussian_save_max_images', type=int, default=16,
+                        help='Maximum rendered view images to save per save event.')
     # aleatoric uncertainty
     # confidence threshold for uncertainty-aware metrics / viz
     parser.add_argument('--confidence_thres', '-cth', type=float, default=0.8,
@@ -221,6 +252,34 @@ def parse_args(skip_command_line=False):
         raise ValueError(
             "--eval_min_num_cameras must be <= --eval_max_num_cameras "
             f"(got {args.eval_min_num_cameras} > {args.eval_max_num_cameras})"
+        )
+    if args.gaussian_patch_radius < 0:
+        raise ValueError(f"--gaussian_patch_radius must be >= 0, got {args.gaussian_patch_radius}")
+    if args.gaussian_renderer_backend not in {"diff_gaussian", "torch", "auto"}:
+        raise ValueError(
+            "--gaussian_renderer_backend must be one of diff_gaussian, torch, auto; "
+            f"got {args.gaussian_renderer_backend!r}"
+        )
+    if args.gaussian_znear <= 0:
+        raise ValueError(f"--gaussian_znear must be > 0, got {args.gaussian_znear}")
+    if args.gaussian_zfar <= args.gaussian_znear:
+        raise ValueError(
+            "--gaussian_zfar must be greater than --gaussian_znear "
+            f"(got {args.gaussian_zfar} <= {args.gaussian_znear})"
+        )
+    if args.gaussian_init_scale <= 0:
+        raise ValueError(f"--gaussian_init_scale must be > 0, got {args.gaussian_init_scale}")
+    if args.gaussian_min_scale <= 0:
+        raise ValueError(f"--gaussian_min_scale must be > 0, got {args.gaussian_min_scale}")
+    if not (0.0 < args.gaussian_init_opacity < 1.0):
+        raise ValueError(
+            "--gaussian_init_opacity must be in (0, 1), "
+            f"got {args.gaussian_init_opacity}"
+        )
+    if not (0.0 <= args.gaussian_ssim_weight <= 1.0):
+        raise ValueError(
+            "--gaussian_ssim_weight must be in [0, 1], "
+            f"got {args.gaussian_ssim_weight}"
         )
     # convert comma separated strings to lists
     args.robot_features = [name.strip() for name in args.robot_features.split(',')]

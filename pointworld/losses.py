@@ -17,6 +17,7 @@ import math
 import torch
 from torch.nn import HuberLoss
 from pointworld import metrics as metrics_utils
+from pointworld.gaussian_renderer import gaussian_image_loss
 from utils import safe_loss_computation
 
 
@@ -174,6 +175,29 @@ def internal_loss_fn(
         var_ceiling=var_ceiling,
         uncertainty_logvar_weight=uncertainty_logvar_weight,
     )
+    dynamics_total_loss = total_loss
+
+    if getattr(model.args, "enable_gaussian_splatting", False):
+        if "gaussians" not in outputs:
+            raise RuntimeError("Gaussian splatting is enabled but model outputs have no 'gaussians' entry.")
+        with torch.autocast("cuda", enabled=False):
+            gaussian_loss, gaussian_logs = gaussian_image_loss(
+                outputs["gaussians"],
+                data_dict,
+                patch_radius=int(model.args.gaussian_patch_radius),
+                ssim_weight=float(model.args.gaussian_ssim_weight),
+                use_projection_mask=bool(model.args.gaussian_use_projection_mask),
+                backend=str(model.args.gaussian_renderer_backend),
+                znear=float(model.args.gaussian_znear),
+                zfar=float(model.args.gaussian_zfar),
+            )
+        weighted_gaussian_loss = float(model.args.gaussian_loss_weight) * gaussian_loss
+        total_loss = dynamics_total_loss + weighted_gaussian_loss
+        log_dict["dynamics_loss"] = float(dynamics_total_loss.detach().item())
+        log_dict["gaussian/image_loss"] = float(gaussian_loss.detach().item())
+        log_dict["gaussian/weighted_image_loss"] = float(weighted_gaussian_loss.detach().item())
+        log_dict.update(gaussian_logs)
+
     metrics = compute_single_output_metrics(
         model.args,
         output_scene_flows,

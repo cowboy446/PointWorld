@@ -36,6 +36,7 @@ import numpy as np
 import math
 from pointworld.base import BaseModel
 from pointworld.checkpoint_contract import apply_model_contract_to_args, read_checkpoint_contract
+from pointworld.gaussian_renderer import save_gaussian_renders
 from training import checkpointing as checkpointing_utils
 
 class Trainer:
@@ -161,6 +162,31 @@ class Trainer:
         
         # Initialize consecutive NaN grad norm counter
         self.consecutive_nan_grad_count = 0
+
+    def _maybe_save_gaussian_renders(self, outputs, batch, tag: str, step: int, *, force: bool = False):
+        if self.rank != 0:
+            return 0
+        if not getattr(self.args, "enable_gaussian_splatting", False):
+            return 0
+        if not getattr(self.args, "gaussian_eval_save", True) and not force:
+            return 0
+        if "gaussians" not in outputs:
+            return 0
+        max_images = int(getattr(self.args, "gaussian_save_max_images", 0))
+        if max_images <= 0:
+            return 0
+        return save_gaussian_renders(
+            outputs["gaussians"],
+            batch,
+            getattr(self, "gaussian_render_dir", self.save_dir),
+            tag=tag,
+            step=step,
+            patch_radius=int(getattr(self.args, "gaussian_patch_radius", 2)),
+            max_samples=max_images,
+            backend=str(getattr(self.args, "gaussian_renderer_backend", "diff_gaussian")),
+            znear=float(getattr(self.args, "gaussian_znear", 0.01)),
+            zfar=float(getattr(self.args, "gaussian_zfar", 100.0)),
+        )
 
     def setup_save_dir(self, exp_name=None):
         self.log_dir = self.args.log_dir
@@ -357,6 +383,16 @@ class Trainer:
             if counts[k] > 0:
                 log_dict[f'{prefix}/{k}'] = (metrics[k] / counts[k]).item()
 
+        if last_batch is not None and last_outputs is not None:
+            saved = self._maybe_save_gaussian_renders(
+                last_outputs,
+                last_batch,
+                tag=prefix,
+                step=self.batch_count,
+            )
+            if saved:
+                log_dict[f"{prefix}/gaussian/saved_images"] = saved
+
         return log_dict, data_iter
 
     def should_do(self, action_freq, last_batch, curr_batch):
@@ -448,6 +484,18 @@ class Trainer:
                             self.model.module.loss_fn(outputs, train_batch, training=True)
                             if self.args.distributed else self.model.loss_fn(outputs, train_batch, training=True)
                         )
+
+                        render_freq = int(getattr(self.args, "gaussian_train_save_freq", -1))
+                        if render_freq > 0 and adjusted_batch_count % render_freq == 0:
+                            saved = self._maybe_save_gaussian_renders(
+                                outputs,
+                                train_batch,
+                                tag="train",
+                                step=adjusted_batch_count,
+                                force=True,
+                            )
+                            if saved:
+                                loss_dict["gaussian/saved_train_images"] = float(saved)
 
                     # Check for NaN in total loss before scaling
                     check_tensor_for_nan(total_loss, "total_loss", f"training step (epoch {self.epoch_count:.3f}, batch {train_batch_idx})")
@@ -593,6 +641,12 @@ class Trainer:
                 with torch.autocast(device_type='cuda', dtype=self.amp_dtype):
                     outputs = self.model(batch, training=False)
                     total_loss, loss_dict = self.model.module.loss_fn(outputs, batch, training=False) if self.args.distributed else self.model.loss_fn(outputs, batch, training=False)
+                self._maybe_save_gaussian_renders(
+                    outputs,
+                    batch,
+                    tag=f"full_eval_{prefix.replace('/', '_')}",
+                    step=i,
+                )
                 
                 # Accumulate batch metrics
                 for k, v in loss_dict.items():

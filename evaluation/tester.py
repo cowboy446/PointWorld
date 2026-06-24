@@ -149,6 +149,7 @@ class Tester(Trainer):
 
         self.eval_dir = eval_dir
         super().__init__(args, inference_only=True, data_info_dict=None)
+        self.gaussian_render_dir = self.eval_dir
 
         def _is_sim_domain(domain: str) -> bool:
             dom = str(domain)
@@ -206,6 +207,12 @@ class Tester(Trainer):
 
             outputs = self.model(batch, training=False)
             total_loss, loss_dict = self.model.loss_fn(outputs, batch, training=False)
+            self._maybe_save_gaussian_renders(
+                outputs,
+                batch,
+                tag=f"eval_{split}",
+                step=i,
+            )
 
             domains_list = [str(d) for d in batch["__domain__"]]
             domain_counts = Counter(domains_list)

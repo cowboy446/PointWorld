@@ -25,6 +25,7 @@ from pointworld.embeddings import TemporalEmbedding
 from pointworld import norm_stats as norm_stats_utils
 from pointworld import losses as losses_utils
 from pointworld import metrics as metrics_utils
+from pointworld.gaussian_renderer import inverse_softplus, rgb_to_sh0
 from utils import handle_nan_outputs
 
 UNCERTAINTY_LOGVAR_WEIGHT = 1.0
@@ -229,6 +230,26 @@ class DynamicsPredictor(nn.Module):
         with torch.no_grad():
             self.log_var_head[-1].bias.fill_(math.log(0.005 ** 2))
 
+        self.gaussian_dim = 14
+        self.gaussian_head = None
+        if getattr(args, "enable_gaussian_splatting", False):
+            self.gaussian_head = nn.Sequential(
+                MLP(in_channels, 128, 128),
+                nn.Linear(128, self.gaussian_dim),
+            )
+            with torch.no_grad():
+                last = self.gaussian_head[-1]
+                nn.init.kaiming_normal_(last.weight)
+                last.weight.mul_(1e-3)
+                last.bias.zero_()
+                init_rgb = torch.full((3,), 0.5)
+                last.bias[3:6].copy_(rgb_to_sh0(init_rgb))
+                last.bias[6] = 1.0
+                scale_bias = inverse_softplus(max(float(args.gaussian_init_scale) - float(args.gaussian_min_scale), 1e-6))
+                last.bias[10:13].fill_(scale_bias)
+                opacity = min(max(float(args.gaussian_init_opacity), 1e-4), 1.0 - 1e-4)
+                last.bias[13] = math.log(opacity / (1.0 - opacity))
+
         # Skip connection FiLM parameters for scene features
         self.skip_film_gamma = nn.Parameter(torch.ones(1, 1, in_channels))
         self.skip_film_beta = nn.Parameter(torch.zeros(1, 1, in_channels))
@@ -329,6 +350,28 @@ class DynamicsPredictor(nn.Module):
             log_var = torch.cat([zeros_first_var, log_var_partial], dim=1)  # (B,T,Ns,1)
 
             outputs = {"pred": dynamics, "log_var": log_var}
+
+            if self.gaussian_head is not None:
+                raw_gaussian = self.gaussian_head(padded_scene_feat).float()
+                delta_mu_raw = raw_gaussian[..., 0:3]
+                sh0 = raw_gaussian[..., 3:6]
+                q_raw = raw_gaussian[..., 6:10]
+                scales_raw = raw_gaussian[..., 10:13]
+                opacity_raw = raw_gaussian[..., 13:14]
+
+                delta_mu = torch.tanh(delta_mu_raw) * float(self.args.gaussian_delta_mu_max)
+                q = torch.nn.functional.normalize(q_raw, dim=-1, eps=1e-6)
+                scales = torch.nn.functional.softplus(scales_raw) + float(self.args.gaussian_min_scale)
+                opacity = torch.sigmoid(opacity_raw)
+
+                outputs["gaussians"] = {
+                    "delta_mu": delta_mu,
+                    "sh0": sh0,
+                    "q": q,
+                    "s": scales,
+                    "o": opacity,
+                    "raw": raw_gaussian,
+                }
 
         return outputs
 
@@ -485,6 +528,9 @@ class BaseModel(nn.Module):
         out["scene_relative_norm"] = pred_norm
         out["scene_relative"] = pred
         out["scene_flows"] = scene_coord0.unsqueeze(1) + pred  # (B,T,Ns,3)
+        if "gaussians" in out:
+            out["gaussians"]["means"] = scene_coord0 + out["gaussians"]["delta_mu"]
+            out["gaussians"]["mask_points"] = scene_coord0
         
         # Check outputs for NaN values with consecutive counting logic
         should_skip_batch, self.consecutive_nan_outputs_count = handle_nan_outputs(
