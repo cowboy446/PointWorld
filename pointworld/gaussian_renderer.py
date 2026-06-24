@@ -434,6 +434,8 @@ def gaussian_image_loss(
             "gaussian/l1": 0.0,
             "gaussian/dssim": 0.0,
             "gaussian/mask_fraction": 0.0,
+            "gaussian/scale_mean": 0.0,
+            "gaussian/scale_max": 0.0,
             "gaussian/num_views": 0.0,
             "gaussian/backend_diff_gaussian": 0.0,
         }
@@ -475,6 +477,8 @@ def gaussian_image_loss(
         "gaussian/l1": sum(l1_vals) / len(l1_vals),
         "gaussian/dssim": sum(dssim_vals) / len(dssim_vals),
         "gaussian/mask_fraction": sum(mask_fracs) / len(mask_fracs),
+        "gaussian/scale_mean": float(gaussians["s"].detach().float().mean().item()),
+        "gaussian/scale_max": float(gaussians["s"].detach().float().max().item()),
         "gaussian/use_projection_mask": float(bool(use_projection_mask)),
         "gaussian/num_views": float(len(views)),
         "gaussian/backend_diff_gaussian": float(diff_backend_count) / float(len(views)),

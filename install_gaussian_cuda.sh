@@ -6,11 +6,16 @@ ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-8.6}"
 
 git submodule update --init --recursive third_party/diff-gaussian-rasterization
 
-conda install -n "${CONDA_ENV}" -c nvidia \
-  cuda-nvcc=12.4 \
-  cuda-cccl=12.4.127 \
-  cuda-cudart-dev=12.4.127 \
-  -y
+if command -v nvcc >/dev/null 2>&1; then
+  echo "Found nvcc at $(command -v nvcc); skipping NVIDIA conda package install."
+  nvcc --version
+else
+  conda install -n "${CONDA_ENV}" -c nvidia \
+    cuda-nvcc=12.4 \
+    cuda-cccl=12.4.127 \
+    cuda-cudart-dev=12.4.127 \
+    -y
+fi
 
 TORCH_CUDA_ARCH_LIST="${ARCH_LIST}" MAX_JOBS="${MAX_JOBS:-8}" \
   conda run -n "${CONDA_ENV}" \

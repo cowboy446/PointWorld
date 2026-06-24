@@ -179,6 +179,8 @@ def parse_args(skip_command_line=False):
                         help='Initial 3D Gaussian scale in world units.')
     parser.add_argument('--gaussian_min_scale', type=float, default=1e-4,
                         help='Minimum positive 3D Gaussian scale in world units.')
+    parser.add_argument('--gaussian_max_scale', type=float, default=0.05,
+                        help='Maximum rendered 3D Gaussian scale in world units; <=0 disables clamping.')
     parser.add_argument('--gaussian_init_opacity', type=float, default=0.1,
                         help='Initial Gaussian opacity before sigmoid parameterization.')
     parser.add_argument('--gaussian_delta_mu_max', type=float, default=0.03,
@@ -271,6 +273,11 @@ def parse_args(skip_command_line=False):
         raise ValueError(f"--gaussian_init_scale must be > 0, got {args.gaussian_init_scale}")
     if args.gaussian_min_scale <= 0:
         raise ValueError(f"--gaussian_min_scale must be > 0, got {args.gaussian_min_scale}")
+    if args.gaussian_max_scale > 0 and args.gaussian_max_scale < args.gaussian_min_scale:
+        raise ValueError(
+            "--gaussian_max_scale must be >= --gaussian_min_scale, or <=0 to disable; "
+            f"got {args.gaussian_max_scale} < {args.gaussian_min_scale}"
+        )
     if not (0.0 < args.gaussian_init_opacity < 1.0):
         raise ValueError(
             "--gaussian_init_opacity must be in (0, 1), "

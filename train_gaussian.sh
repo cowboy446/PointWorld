@@ -23,6 +23,7 @@ CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0} python train.py \
   --gaussian_patch_radius=2 \
   --gaussian_init_scale=0.01 \
   --gaussian_min_scale=0.0001 \
+  --gaussian_max_scale=0.05 \
   --gaussian_init_opacity=0.1 \
   --gaussian_delta_mu_max=0.03 \
   --gaussian_train_save_freq=30 \

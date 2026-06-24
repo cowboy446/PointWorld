@@ -56,7 +56,8 @@
 
 - `install_gaussian_cuda.sh`
   - 初始化 graphdeco rasterizer submodule。
-  - 在 `pointwm` conda 环境中安装 CUDA 12.4 nvcc/CCCL headers。
+  - 如果系统已有 `nvcc`，直接使用本机 CUDA 编译器，避免离线服务器访问 NVIDIA conda channel。
+  - 如果系统没有 `nvcc`，在 `pointwm` conda 环境中安装 CUDA 12.4 nvcc/CCCL headers。
   - 用 `--no-build-isolation` 编译安装 `diff_gaussian_rasterization`。
   - 自动运行一个 CUDA forward/backward smoke test。
 
@@ -99,6 +100,7 @@ bash install_gaussian_cuda.sh
 - `--gaussian_patch_radius`：投影 mask 半径，默认 `2` 表示每个投影点标记 5x5 区域；同时也供 PyTorch fallback renderer 使用。
 - `--gaussian_init_scale`：初始 world-space Gaussian scale。
 - `--gaussian_min_scale`：softplus 后额外加上的正尺度下界。
+- `--gaussian_max_scale`：渲染前的 world-space scale 上界，默认 `0.05`；用于防止少数高斯尺度发散后让 CUDA rasterizer 分配异常大的 tile buffer。
 - `--gaussian_init_opacity`：logit 参数化之前的初始 opacity。
 - `--gaussian_delta_mu_max`：`tanh` 有界中心偏移的最大绝对值，单位为 world units。
 - `--gaussian_train_save_freq`：每 N 个训练 step 保存一次训练 render；`<=0` 表示关闭训练 step 保存。

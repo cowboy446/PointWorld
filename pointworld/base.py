@@ -362,6 +362,9 @@ class DynamicsPredictor(nn.Module):
                 delta_mu = torch.tanh(delta_mu_raw) * float(self.args.gaussian_delta_mu_max)
                 q = torch.nn.functional.normalize(q_raw, dim=-1, eps=1e-6)
                 scales = torch.nn.functional.softplus(scales_raw) + float(self.args.gaussian_min_scale)
+                max_scale = float(getattr(self.args, "gaussian_max_scale", 0.05))
+                if max_scale > 0:
+                    scales = scales.clamp(max=max_scale)
                 opacity = torch.sigmoid(opacity_raw)
 
                 outputs["gaussians"] = {
