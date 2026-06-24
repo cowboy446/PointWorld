@@ -175,6 +175,10 @@ def parse_args(skip_command_line=False):
                         help='Near plane for the CUDA Gaussian rasterizer.')
     parser.add_argument('--gaussian_zfar', type=float, default=100.0,
                         help='Far plane for the CUDA Gaussian rasterizer.')
+    parser.add_argument('--gaussian_min_render_depth', type=float, default=0.05,
+                        help='Drop Gaussians closer than this camera-space depth before rasterization.')
+    parser.add_argument('--gaussian_max_screen_radius', type=float, default=64.0,
+                        help='Clamp per-view Gaussian scale so projected screen radius stays below this many pixels; <=0 disables.')
     parser.add_argument('--gaussian_init_scale', type=float, default=0.01,
                         help='Initial 3D Gaussian scale in world units.')
     parser.add_argument('--gaussian_min_scale', type=float, default=1e-4,
@@ -269,6 +273,10 @@ def parse_args(skip_command_line=False):
             "--gaussian_zfar must be greater than --gaussian_znear "
             f"(got {args.gaussian_zfar} <= {args.gaussian_znear})"
         )
+    if args.gaussian_min_render_depth <= 0:
+        raise ValueError(f"--gaussian_min_render_depth must be > 0, got {args.gaussian_min_render_depth}")
+    if args.gaussian_max_screen_radius <= 0:
+        raise ValueError(f"--gaussian_max_screen_radius must be > 0, got {args.gaussian_max_screen_radius}")
     if args.gaussian_init_scale <= 0:
         raise ValueError(f"--gaussian_init_scale must be > 0, got {args.gaussian_init_scale}")
     if args.gaussian_min_scale <= 0:

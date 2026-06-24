@@ -186,6 +186,8 @@ class Trainer:
             backend=str(getattr(self.args, "gaussian_renderer_backend", "diff_gaussian")),
             znear=float(getattr(self.args, "gaussian_znear", 0.01)),
             zfar=float(getattr(self.args, "gaussian_zfar", 100.0)),
+            min_render_depth=float(getattr(self.args, "gaussian_min_render_depth", 0.05)),
+            max_screen_radius=float(getattr(self.args, "gaussian_max_screen_radius", 64.0)),
         )
 
     def setup_save_dir(self, exp_name=None):

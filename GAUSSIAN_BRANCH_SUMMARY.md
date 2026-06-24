@@ -97,6 +97,8 @@ bash install_gaussian_cuda.sh
 - `--gaussian_renderer_backend`：渲染 backend，可选 `diff_gaussian`（默认）、`torch`、`auto`。
 - `--gaussian_znear`：graphdeco CUDA rasterizer near plane。
 - `--gaussian_zfar`：graphdeco CUDA rasterizer far plane。
+- `--gaussian_min_render_depth`：进入 CUDA rasterizer 前的最小相机空间深度，默认 `0.05`；太近的点会被跳过，避免屏幕半径爆炸。
+- `--gaussian_max_screen_radius`：每个视角中 Gaussian 的最大屏幕空间半径，默认 `64` 像素；渲染前会按 `scale <= max_screen_radius * depth / focal` 动态限制 scale。
 - `--gaussian_patch_radius`：投影 mask 半径，默认 `2` 表示每个投影点标记 5x5 区域；同时也供 PyTorch fallback renderer 使用。
 - `--gaussian_init_scale`：初始 world-space Gaussian scale。
 - `--gaussian_min_scale`：softplus 后额外加上的正尺度下界。
@@ -158,6 +160,16 @@ bash install_gaussian_cuda.sh
   - `--gaussian_use_projection_mask=true` 时会在每个初始点云投影像素附近标记 5x5 区域，`mask_fraction` 随点数、重叠和边界裁剪变化。
 - render 保存 smoke test：
   - 已在 `/tmp/pointworld_gaussian_cuda_test/gaussian_renders/smoke/step_00000001/` 写出 `pred.png`、`target.png`、`mask.png`。
+
+## 显存保护
+
+`diff-gaussian-rasterization` 会根据每个 Gaussian 在当前视角下的屏幕空间半径分配 tile/binning buffer。如果某些点离相机过近，或者预测尺度过大，即使 GPU 还有大量空闲显存，也可能出现异常大的分配请求，例如几十万 GiB 以上。这不是普通 batch size 显存不足，而是 rasterizer 的 screen-space radius 爆炸。
+
+当前实现有三层保护：
+
+- `--gaussian_max_scale=0.05`：限制 world-space scale。
+- `--gaussian_min_render_depth=0.05`：过滤太靠近相机的点。
+- `--gaussian_max_screen_radius=64`：按当前视角 depth/focal 动态限制 scale，让投影半径不超过指定像素。
 
 未完成：
 

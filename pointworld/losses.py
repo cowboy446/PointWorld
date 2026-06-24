@@ -190,6 +190,8 @@ def internal_loss_fn(
                 backend=str(model.args.gaussian_renderer_backend),
                 znear=float(model.args.gaussian_znear),
                 zfar=float(model.args.gaussian_zfar),
+                min_render_depth=float(model.args.gaussian_min_render_depth),
+                max_screen_radius=float(model.args.gaussian_max_screen_radius),
             )
         weighted_gaussian_loss = float(model.args.gaussian_loss_weight) * gaussian_loss
         total_loss = dynamics_total_loss + weighted_gaussian_loss

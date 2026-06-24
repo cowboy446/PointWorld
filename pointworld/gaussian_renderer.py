@@ -164,6 +164,8 @@ def render_single_view_diff_gaussian(
     patch_radius: int = 2,
     znear: float = 0.01,
     zfar: float = 100.0,
+    min_render_depth: float = 0.05,
+    max_screen_radius: float = 64.0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     try:
         from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianRasterizer
@@ -176,7 +178,19 @@ def render_single_view_diff_gaussian(
     device = means.device
     if exists is None:
         exists = torch.ones(means.shape[0], dtype=torch.bool, device=device)
-    valid = exists.bool()
+    pixels, depth = _project_points(means.detach().float(), intrinsic.detach().float(), extrinsic.detach().float())
+    min_depth = max(float(znear), float(min_render_depth))
+    valid = (
+        exists.bool()
+        & torch.isfinite(pixels).all(dim=-1)
+        & torch.isfinite(depth)
+        & (depth > min_depth)
+        & (depth < float(zfar))
+        & (pixels[:, 0] >= -float(width))
+        & (pixels[:, 0] < 2.0 * float(width))
+        & (pixels[:, 1] >= -float(height))
+        & (pixels[:, 1] < 2.0 * float(height))
+    )
     if not valid.any():
         image = torch.zeros((3, height, width), device=device, dtype=torch.float32)
         mask = torch.zeros((1, height, width), device=device, dtype=torch.bool)
@@ -190,7 +204,13 @@ def render_single_view_diff_gaussian(
 
         means_v = means_f[valid].contiguous()
         colors_v = sh0_to_rgb(sh0[valid].float()).contiguous()
-        scales_v = scales[valid].float().contiguous()
+        scales_v = scales[valid].float()
+        if max_screen_radius > 0:
+            focal = 0.5 * (intrinsic_f[0, 0].abs() + intrinsic_f[1, 1].abs()).clamp_min(1e-6)
+            depth_v = depth[valid].to(device=device, dtype=torch.float32).clamp_min(float(min_depth))
+            max_scale_v = (float(max_screen_radius) * depth_v / focal).view(-1, 1)
+            scales_v = torch.minimum(scales_v, max_scale_v)
+        scales_v = scales_v.contiguous()
         quats_v = quats[valid].float().contiguous()
         opacity_v = opacity[valid].float().view(-1, 1).contiguous()
         means2d = torch.zeros_like(means_v, requires_grad=True)
@@ -332,6 +352,8 @@ def render_batch_views(
     backend: str = "diff_gaussian",
     znear: float = 0.01,
     zfar: float = 100.0,
+    min_render_depth: float = 0.05,
+    max_screen_radius: float = 64.0,
 ) -> list[dict[str, torch.Tensor | str | int]]:
     prefixes = camera_prefixes(data_dict)
     if limit_views is not None and limit_views > 0:
@@ -376,6 +398,8 @@ def render_batch_views(
                     patch_radius=patch_radius,
                     znear=znear,
                     zfar=zfar,
+                    min_render_depth=min_render_depth,
+                    max_screen_radius=max_screen_radius,
                 )
             elif backend_to_use == "torch":
                 image, mask = render_single_view(
@@ -418,6 +442,8 @@ def gaussian_image_loss(
     backend: str = "diff_gaussian",
     znear: float = 0.01,
     zfar: float = 100.0,
+    min_render_depth: float = 0.05,
+    max_screen_radius: float = 64.0,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     views = render_batch_views(
         gaussians,
@@ -427,6 +453,8 @@ def gaussian_image_loss(
         backend=backend,
         znear=znear,
         zfar=zfar,
+        min_render_depth=min_render_depth,
+        max_screen_radius=max_screen_radius,
     )
     if not views:
         zero = gaussians["means"].new_zeros(())
@@ -498,6 +526,8 @@ def save_gaussian_renders(
     backend: str = "diff_gaussian",
     znear: float = 0.01,
     zfar: float = 100.0,
+    min_render_depth: float = 0.05,
+    max_screen_radius: float = 64.0,
 ) -> int:
     if max_samples <= 0:
         return 0
@@ -509,6 +539,8 @@ def save_gaussian_renders(
         backend=backend,
         znear=znear,
         zfar=zfar,
+        min_render_depth=min_render_depth,
+        max_screen_radius=max_screen_radius,
     )
     if not views:
         return 0
