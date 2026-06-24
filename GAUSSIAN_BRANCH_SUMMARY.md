@@ -170,6 +170,7 @@ bash install_gaussian_cuda.sh
 - `--gaussian_max_scale=0.05`：限制 world-space scale。
 - `--gaussian_min_render_depth=0.05`：过滤太靠近相机的点。
 - `--gaussian_max_screen_radius=64`：按当前视角 depth/focal 动态限制 scale，让投影半径不超过指定像素。
+- 进入 graphdeco CUDA rasterizer 前，只保留投影落在当前图像范围内、参数全为 finite 的 Gaussians；如果某个视角仍触发 rasterizer OOM，会跳过该视角，避免整个 eval/train step 崩溃。
 
 未完成：
 

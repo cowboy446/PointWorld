@@ -149,6 +149,12 @@ def _projection_mask_from_points(
         return mask_flat.view(1, height, width)
 
 
+def _empty_render(device: torch.device, height: int, width: int) -> tuple[torch.Tensor, torch.Tensor]:
+    image = torch.zeros((3, height, width), device=device, dtype=torch.float32)
+    mask = torch.zeros((1, height, width), device=device, dtype=torch.bool)
+    return image, mask
+
+
 def render_single_view_diff_gaussian(
     means: torch.Tensor,
     sh0: torch.Tensor,
@@ -180,21 +186,27 @@ def render_single_view_diff_gaussian(
         exists = torch.ones(means.shape[0], dtype=torch.bool, device=device)
     pixels, depth = _project_points(means.detach().float(), intrinsic.detach().float(), extrinsic.detach().float())
     min_depth = max(float(znear), float(min_render_depth))
+    input_finite = (
+        torch.isfinite(means).all(dim=-1)
+        & torch.isfinite(sh0).all(dim=-1)
+        & torch.isfinite(quats).all(dim=-1)
+        & torch.isfinite(scales).all(dim=-1)
+        & torch.isfinite(opacity).view(-1)
+    )
     valid = (
         exists.bool()
+        & input_finite
         & torch.isfinite(pixels).all(dim=-1)
         & torch.isfinite(depth)
         & (depth > min_depth)
         & (depth < float(zfar))
-        & (pixels[:, 0] >= -float(width))
-        & (pixels[:, 0] < 2.0 * float(width))
-        & (pixels[:, 1] >= -float(height))
-        & (pixels[:, 1] < 2.0 * float(height))
+        & (pixels[:, 0] >= 0.0)
+        & (pixels[:, 0] < float(width))
+        & (pixels[:, 1] >= 0.0)
+        & (pixels[:, 1] < float(height))
     )
     if not valid.any():
-        image = torch.zeros((3, height, width), device=device, dtype=torch.float32)
-        mask = torch.zeros((1, height, width), device=device, dtype=torch.bool)
-        return image, mask
+        return _empty_render(device, height, width)
 
     # The diff-gaussian CUDA extension expects fp32 tensors and is not autocast-safe.
     with torch.autocast("cuda", enabled=False):
@@ -205,14 +217,32 @@ def render_single_view_diff_gaussian(
         means_v = means_f[valid].contiguous()
         colors_v = sh0_to_rgb(sh0[valid].float()).contiguous()
         scales_v = scales[valid].float()
+        quats_v = quats[valid].float()
+        opacity_v = opacity[valid].float().view(-1, 1)
         if max_screen_radius > 0:
             focal = 0.5 * (intrinsic_f[0, 0].abs() + intrinsic_f[1, 1].abs()).clamp_min(1e-6)
             depth_v = depth[valid].to(device=device, dtype=torch.float32).clamp_min(float(min_depth))
             max_scale_v = (float(max_screen_radius) * depth_v / focal).view(-1, 1)
             scales_v = torch.minimum(scales_v, max_scale_v)
+        scales_v = scales_v.clamp_min(1e-7)
+        params_finite = (
+            torch.isfinite(means_v).all(dim=-1)
+            & torch.isfinite(colors_v).all(dim=-1)
+            & torch.isfinite(scales_v).all(dim=-1)
+            & torch.isfinite(quats_v).all(dim=-1)
+            & torch.isfinite(opacity_v).view(-1)
+        )
+        if not params_finite.all():
+            means_v = means_v[params_finite].contiguous()
+            colors_v = colors_v[params_finite].contiguous()
+            scales_v = scales_v[params_finite]
+            quats_v = quats_v[params_finite].contiguous()
+            opacity_v = opacity_v[params_finite].contiguous()
+            if means_v.numel() == 0:
+                return _empty_render(device, height, width)
         scales_v = scales_v.contiguous()
-        quats_v = quats[valid].float().contiguous()
-        opacity_v = opacity[valid].float().view(-1, 1).contiguous()
+        quats_v = quats_v.contiguous()
+        opacity_v = opacity_v.contiguous()
         means2d = torch.zeros_like(means_v, requires_grad=True)
 
         fx = intrinsic_f[0, 0].clamp_min(1e-6)
@@ -238,14 +268,26 @@ def render_single_view_diff_gaussian(
             debug=False,
         )
         rasterizer = GaussianRasterizer(settings)
-        image, radii_v = rasterizer(
-            means3D=means_v,
-            means2D=means2d,
-            colors_precomp=colors_v,
-            opacities=opacity_v,
-            scales=scales_v,
-            rotations=quats_v,
-        )
+        try:
+            image, radii_v = rasterizer(
+                means3D=means_v,
+                means2D=means2d,
+                colors_precomp=colors_v,
+                opacities=opacity_v,
+                scales=scales_v,
+                rotations=quats_v,
+            )
+        except torch.OutOfMemoryError:
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
+            print(
+                "Warning: diff-gaussian rasterizer OOM for one view; skipping this view "
+                f"(valid_gaussians={int(means_v.shape[0])}, "
+                f"max_scale={float(scales_v.detach().max().item()) if scales_v.numel() else 0.0:.6g}, "
+                f"min_depth={float(depth[valid].detach().min().item()) if valid.any() else 0.0:.6g}, "
+                f"max_screen_radius={float(max_screen_radius):.3g})."
+            )
+            return _empty_render(device, height, width)
     if mask_points is None:
         mask_points = means
     mask = _projection_mask_from_points(
