@@ -167,8 +167,10 @@ def parse_args(skip_command_line=False):
                         help='D-SSIM mixing weight in the Gaussian image loss; 0.2 follows the 3DGS objective.')
     parser.add_argument('--gaussian_use_projection_mask', type=str, default='false',
                         help='If true, supervise only pixels where frame-0 scene points project; otherwise supervise the full image.')
+    parser.add_argument('--gaussian_mask_size', type=int, default=5,
+                        help='Odd side length of the square mask centered at each projected 2D scene point.')
     parser.add_argument('--gaussian_patch_radius', type=int, default=2,
-                        help='Projection-mask radius in pixels; default 2 marks a 5x5 window around each projected scene point.')
+                        help='Local splat radius used only by the PyTorch fallback renderer.')
     parser.add_argument('--gaussian_renderer_backend', type=str, default='diff_gaussian',
                         help="Gaussian renderer backend: 'diff_gaussian' for graphdeco CUDA, 'torch' for fallback, or 'auto'.")
     parser.add_argument('--gaussian_znear', type=float, default=0.01,
@@ -261,6 +263,11 @@ def parse_args(skip_command_line=False):
         )
     if args.gaussian_patch_radius < 0:
         raise ValueError(f"--gaussian_patch_radius must be >= 0, got {args.gaussian_patch_radius}")
+    if args.gaussian_mask_size <= 0 or args.gaussian_mask_size % 2 == 0:
+        raise ValueError(
+            "--gaussian_mask_size must be a positive odd integer so the mask has one center pixel; "
+            f"got {args.gaussian_mask_size}"
+        )
     if args.gaussian_renderer_backend not in {"diff_gaussian", "torch", "auto"}:
         raise ValueError(
             "--gaussian_renderer_backend must be one of diff_gaussian, torch, auto; "

@@ -168,6 +168,7 @@ def render_single_view_diff_gaussian(
     exists: torch.Tensor | None = None,
     mask_points: torch.Tensor | None = None,
     patch_radius: int = 2,
+    mask_radius: int = 2,
     znear: float = 0.01,
     zfar: float = 100.0,
     min_render_depth: float = 0.05,
@@ -299,6 +300,7 @@ def render_single_view_diff_gaussian(
                 exists=exists,
                 mask_points=mask_points,
                 patch_radius=patch_radius,
+                mask_radius=mask_radius,
             )
     if mask_points is None:
         mask_points = means
@@ -309,7 +311,7 @@ def render_single_view_diff_gaussian(
         height,
         width,
         exists,
-        radius=patch_radius,
+        radius=mask_radius,
     )
     return image.clamp(0.0, 1.0), mask
 
@@ -326,6 +328,7 @@ def render_single_view(
     exists: torch.Tensor | None = None,
     mask_points: torch.Tensor | None = None,
     patch_radius: int = 2,
+    mask_radius: int = 2,
     min_alpha: float = 1e-4,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     device = means.device
@@ -391,7 +394,7 @@ def render_single_view(
         height,
         width,
         exists,
-        radius=patch_radius,
+        radius=mask_radius,
     )
     return image, mask
 
@@ -401,6 +404,7 @@ def render_batch_views(
     data_dict: dict,
     *,
     patch_radius: int,
+    mask_size: int = 5,
     min_alpha: float = 1e-4,
     limit_views: int | None = None,
     backend: str = "diff_gaussian",
@@ -424,6 +428,7 @@ def render_batch_views(
     scene_exists = data_dict["scene_exists"][:, 0].bool()
 
     rendered = []
+    mask_radius = int(mask_size) // 2
     B = means.shape[0]
     for b in range(B):
         for prefix in prefixes:
@@ -450,6 +455,7 @@ def render_batch_views(
                     exists=scene_exists[b],
                     mask_points=mask_points[b],
                     patch_radius=patch_radius,
+                    mask_radius=mask_radius,
                     znear=znear,
                     zfar=zfar,
                     min_render_depth=min_render_depth,
@@ -468,6 +474,7 @@ def render_batch_views(
                     exists=scene_exists[b],
                     mask_points=mask_points[b],
                     patch_radius=patch_radius,
+                    mask_radius=mask_radius,
                     min_alpha=min_alpha,
                 )
             else:
@@ -490,6 +497,7 @@ def gaussian_image_loss(
     data_dict: dict,
     *,
     patch_radius: int,
+    mask_size: int,
     ssim_weight: float,
     use_projection_mask: bool,
     limit_views: int | None = None,
@@ -503,6 +511,7 @@ def gaussian_image_loss(
         gaussians,
         data_dict,
         patch_radius=patch_radius,
+        mask_size=mask_size,
         limit_views=limit_views,
         backend=backend,
         znear=znear,
@@ -576,6 +585,7 @@ def save_gaussian_renders(
     tag: str,
     step: int,
     patch_radius: int,
+    mask_size: int,
     max_samples: int,
     backend: str = "diff_gaussian",
     znear: float = 0.01,
@@ -589,6 +599,7 @@ def save_gaussian_renders(
         gaussians,
         data_dict,
         patch_radius=patch_radius,
+        mask_size=mask_size,
         limit_views=None,
         backend=backend,
         znear=znear,

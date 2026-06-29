@@ -185,6 +185,7 @@ def internal_loss_fn(
                 outputs["gaussians"],
                 data_dict,
                 patch_radius=int(model.args.gaussian_patch_radius),
+                mask_size=int(model.args.gaussian_mask_size),
                 ssim_weight=float(model.args.gaussian_ssim_weight),
                 use_projection_mask=bool(model.args.gaussian_use_projection_mask),
                 backend=str(model.args.gaussian_renderer_backend),

@@ -17,6 +17,7 @@ CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0} python train.py \
   --gaussian_loss_weight=1.0 \
   --gaussian_ssim_weight=0.2 \
   --gaussian_use_projection_mask=true \
+  --gaussian_mask_size=5 \
   --gaussian_renderer_backend=diff_gaussian \
   --gaussian_znear=0.01 \
   --gaussian_zfar=100.0 \

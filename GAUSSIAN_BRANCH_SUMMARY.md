@@ -31,8 +31,8 @@
   - 使用 batch 中所有采样到的 `cam*` 第 0 帧视角。
   - 使用现有 world-to-camera extrinsics 和 intrinsics 投影高斯中心。
   - 渲染与原图同尺寸的 RGB 图像，并生成第 0 帧初始点云投影 mask 供可视化或可选 masked loss 使用。
-  - mask 会把每个初始场景点的投影像素及其周围 5x5 区域设为 1，避免监督区域过于离散。
-  - 默认对整张图计算 photometric loss；如果 `--gaussian_use_projection_mask=true`，则只在初始点云投影 5x5 区域上计算 loss。
+  - mask 会以每个初始场景点投影到二维图像的坐标为中心，将 `--gaussian_mask_size` 指定的正方形区域设为 1，默认是 5x5。
+  - 默认对整张图计算 photometric loss；如果 `--gaussian_use_projection_mask=true`，则只在初始点云投影 mask 区域上计算 loss。
 
 - `pointworld/losses.py`
   - 在现有 dynamics loss 上可选加入 Gaussian image loss。
@@ -69,7 +69,7 @@
 
 默认渲染器现在是 `diff_gaussian`，也就是原始 3DGS release 中的 graphdeco/Inria CUDA rasterizer。它消耗预测出来的 Gaussian `means`、从 0 阶球谐转换得到的 RGB、opacity、各向异性 scale 和 quaternion rotation，并返回可微 RGB render。
 
-旧的局部 PyTorch renderer 只保留为 fallback/debug backend。当前默认训练不加 mask，直接监督整张第 0 帧 RGB 图；如果打开 `--gaussian_use_projection_mask=true`，loss mask 会由第 0 帧初始点云投影生成，而不是由 Gaussian radii 生成。每个投影点默认覆盖以该像素为中心的 5x5 区域。
+旧的局部 PyTorch renderer 只保留为 fallback/debug backend。当前默认训练不加 mask，直接监督整张第 0 帧 RGB 图；如果打开 `--gaussian_use_projection_mask=true`，loss mask 会由第 0 帧初始点云投影生成，而不是由 Gaussian radii 生成。每个投影点覆盖以该二维像素为中心、边长由 `--gaussian_mask_size` 控制的正方形区域。
 
 安装 CUDA backend：
 
@@ -85,9 +85,9 @@ bash install_gaussian_cuda.sh
 2. Gaussian 中心投影到该相机视角。
 3. graphdeco CUDA rasterizer 使用预测的 `sh0/q/s/o` 渲染 RGB。
 4. 默认情况下，整张图像都参与 L1 和 D-SSIM。
-5. 如果 `--gaussian_use_projection_mask=true`，则只使用第 0 帧初始点云投影到该视角后形成的 5x5 局部区域作为 loss mask。
+5. 如果 `--gaussian_use_projection_mask=true`，则只使用第 0 帧初始点云投影到该视角后形成的可配置正方形区域作为 loss mask。
 
-保存的 `*_mask.png` 始终表示初始点云投影 mask，默认每个投影点覆盖 5x5 区域，方便检查相机参数、坐标系和点云覆盖情况；它不一定代表当前训练 loss 的实际监督范围。
+保存的 `*_mask.png` 始终表示初始点云投影 mask，默认每个投影点覆盖 5x5 区域，方便检查相机参数、坐标系和点云覆盖情况；可通过 `--gaussian_mask_size` 修改区域边长。它不一定代表当前训练 loss 的实际监督范围。
 
 ## 命令行参数
 
@@ -95,12 +95,13 @@ bash install_gaussian_cuda.sh
 - `--gaussian_loss_weight`：Gaussian image loss 加到 dynamics loss 前的权重。
 - `--gaussian_ssim_weight`：D-SSIM 混合权重，默认 `0.2`。
 - `--gaussian_use_projection_mask`：是否只在第 0 帧初始点云投影 mask 上监督；默认 `false`，即整图监督。
+- `--gaussian_mask_size`：以二维投影坐标为中心的正方形 mask 边长，必须为正奇数；默认 `5`，例如 `1` 表示只标记中心像素，`9` 表示 9x9。
 - `--gaussian_renderer_backend`：渲染 backend，可选 `diff_gaussian`（默认）、`torch`、`auto`。
 - `--gaussian_znear`：graphdeco CUDA rasterizer near plane。
 - `--gaussian_zfar`：graphdeco CUDA rasterizer far plane。
 - `--gaussian_min_render_depth`：进入 CUDA rasterizer 前的最小相机空间深度，默认 `0.05`；太近的点会被跳过，避免屏幕半径爆炸。
 - `--gaussian_max_screen_radius`：每个视角中 Gaussian 的最大屏幕空间半径，默认 `64` 像素；渲染前会按 `scale <= max_screen_radius * depth / focal` 动态限制 scale。
-- `--gaussian_patch_radius`：投影 mask 半径，默认 `2` 表示每个投影点标记 5x5 区域；同时也供 PyTorch fallback renderer 使用。
+- `--gaussian_patch_radius`：仅用于 PyTorch fallback renderer 的局部 splat 半径，不再控制投影 mask 大小。
 - `--gaussian_init_scale`：初始 world-space Gaussian scale。
 - `--gaussian_min_scale`：softplus 后额外加上的正尺度下界。
 - `--gaussian_max_scale`：渲染前的 world-space scale 上界，默认 `0.05`；用于防止少数高斯尺度发散后让 CUDA rasterizer 分配异常大的 tile buffer。
@@ -158,7 +159,7 @@ bash install_gaussian_cuda.sh
   - `means`、`sh0`、`s`、`o` 都有非零梯度。
 - 整图/投影 mask 两种监督模式 smoke test：
   - `--gaussian_use_projection_mask=false` 时 `mask_fraction = 1.0`。
-  - `--gaussian_use_projection_mask=true` 时会在每个初始点云投影像素附近标记 5x5 区域，`mask_fraction` 随点数、重叠和边界裁剪变化。
+  - `--gaussian_use_projection_mask=true` 时会以每个初始点云投影像素为中心标记 `gaussian_mask_size x gaussian_mask_size` 区域，`mask_fraction` 随尺寸、点数、重叠和边界裁剪变化。
 - render 保存 smoke test：
   - 已在 `/tmp/pointworld_gaussian_cuda_test/gaussian_renders/smoke/step_00000001/` 写出 `pred.png`、`target.png`、`mask.png`。
 

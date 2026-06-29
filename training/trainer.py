@@ -182,6 +182,7 @@ class Trainer:
             tag=tag,
             step=step,
             patch_radius=int(getattr(self.args, "gaussian_patch_radius", 2)),
+            mask_size=int(getattr(self.args, "gaussian_mask_size", 5)),
             max_samples=max_images,
             backend=str(getattr(self.args, "gaussian_renderer_backend", "diff_gaussian")),
             znear=float(getattr(self.args, "gaussian_znear", 0.01)),
