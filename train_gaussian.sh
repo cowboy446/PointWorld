@@ -31,4 +31,5 @@ CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0} python train.py \
   --gaussian_delta_mu_max=0.03 \
   --gaussian_train_save_freq=30 \
   --gaussian_eval_save=true \
+  --gaussian_save_ply=true \
   --gaussian_save_max_images=16

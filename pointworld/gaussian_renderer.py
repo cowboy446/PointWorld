@@ -7,6 +7,7 @@ import os
 import re
 from pathlib import Path
 
+import numpy as np
 import torch
 from torchvision.utils import save_image
 
@@ -25,6 +26,75 @@ def sh0_to_rgb(sh0: torch.Tensor) -> torch.Tensor:
 def inverse_softplus(value: float) -> float:
     x = torch.tensor(float(value), dtype=torch.float32)
     return float(torch.log(torch.expm1(x.clamp_min(1e-8))).item())
+
+
+@torch.no_grad()
+def save_gaussian_ply(
+    gaussians: dict[str, torch.Tensor],
+    exists: torch.Tensor,
+    output_path: str | os.PathLike[str],
+) -> int:
+    means = gaussians["means"].detach().float()
+    sh0 = gaussians["sh0"].detach().float()
+    quats = torch.nn.functional.normalize(gaussians["q"].detach().float(), dim=-1, eps=1e-8)
+    scales = gaussians["s"].detach().float()
+    opacity = gaussians["o"].detach().float().view(-1, 1)
+
+    valid = (
+        exists.detach().bool().view(-1)
+        & torch.isfinite(means).all(dim=-1)
+        & torch.isfinite(sh0).all(dim=-1)
+        & torch.isfinite(quats).all(dim=-1)
+        & torch.isfinite(scales).all(dim=-1)
+        & torch.isfinite(opacity).view(-1)
+        & (scales > 0).all(dim=-1)
+    )
+    means = means[valid].cpu().numpy()
+    sh0 = sh0[valid].cpu().numpy()
+    quats = quats[valid].cpu().numpy()
+    log_scales = torch.log(scales[valid].clamp_min(1e-12)).cpu().numpy()
+    opacity_logits = torch.logit(opacity[valid].clamp(1e-6, 1.0 - 1e-6)).cpu().numpy()
+
+    base_property_names = [
+        "x", "y", "z", "nx", "ny", "nz",
+        "f_dc_0", "f_dc_1", "f_dc_2",
+    ]
+    sh_rest_property_names = [f"f_rest_{index}" for index in range(45)]
+    property_names = base_property_names + sh_rest_property_names + [
+        "opacity",
+        "scale_0", "scale_1", "scale_2",
+        "rot_0", "rot_1", "rot_2", "rot_3",
+    ]
+    vertices = np.empty(means.shape[0], dtype=np.dtype([(name, "<f4") for name in property_names]))
+    values = np.concatenate(
+        [
+            means,
+            np.zeros_like(means),
+            sh0,
+            np.zeros((means.shape[0], 45), dtype=np.float32),
+            opacity_logits,
+            log_scales,
+            quats,
+        ],
+        axis=1,
+    ).astype(np.float32, copy=False)
+    for index, name in enumerate(property_names):
+        vertices[name] = values[:, index]
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    header = [
+        "ply",
+        "format binary_little_endian 1.0",
+        "comment PointWorld predicted 3D Gaussians; SH degree 0",
+        f"element vertex {vertices.shape[0]}",
+    ]
+    header.extend(f"property float {name}" for name in property_names)
+    header.extend(["end_header", ""])
+    with output_path.open("wb") as handle:
+        handle.write("\n".join(header).encode("ascii"))
+        handle.write(vertices.tobytes())
+    return int(vertices.shape[0])
 
 
 def camera_prefixes(data_dict: dict) -> list[str]:
@@ -587,6 +657,7 @@ def save_gaussian_renders(
     patch_radius: int,
     mask_size: int,
     max_samples: int,
+    save_ply: bool = True,
     backend: str = "diff_gaussian",
     znear: float = 0.01,
     zfar: float = 100.0,
@@ -613,11 +684,25 @@ def save_gaussian_renders(
     out_root.mkdir(parents=True, exist_ok=True)
 
     keys = data_dict.get("__key__", None)
+    scene_exists = data_dict["scene_exists"][:, 0].bool()
     saved = 0
+    saved_ply_batches: set[int] = set()
     for view in views:
         b = int(view["batch_index"])
         sample_key = str(keys[b]) if isinstance(keys, (list, tuple)) and b < len(keys) else f"sample{b}"
         safe_key = re.sub(r"[^A-Za-z0-9_.-]+", "_", sample_key)[-120:]
+        if save_ply and b not in saved_ply_batches:
+            sample_gaussians = {
+                name: value[b]
+                for name, value in gaussians.items()
+                if isinstance(value, torch.Tensor)
+            }
+            save_gaussian_ply(
+                sample_gaussians,
+                scene_exists[b],
+                out_root / f"{safe_key}_gaussians.ply",
+            )
+            saved_ply_batches.add(b)
         prefix = str(view["prefix"])
         save_image(view["image"].clamp(0.0, 1.0), out_root / f"{safe_key}_{prefix}_pred.png")
         save_image(view["target"].clamp(0.0, 1.0), out_root / f"{safe_key}_{prefix}_target.png")

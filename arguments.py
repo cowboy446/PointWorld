@@ -195,6 +195,8 @@ def parse_args(skip_command_line=False):
                         help='Save Gaussian training renders every N train steps; <=0 disables train saves.')
     parser.add_argument('--gaussian_eval_save', type=str, default='true',
                         help='Save Gaussian renders during train-time eval and eval.py.')
+    parser.add_argument('--gaussian_save_ply', type=str, default='true',
+                        help='Save one classic 3DGS PLY per sample alongside rendered preview images.')
     parser.add_argument('--gaussian_save_max_images', type=int, default=16,
                         help='Maximum rendered view images to save per save event.')
     # aleatoric uncertainty

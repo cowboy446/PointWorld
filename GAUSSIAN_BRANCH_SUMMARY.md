@@ -42,7 +42,7 @@
 
 - `training/trainer.py`
   - 开启 Gaussian 监督后，在训练和训练过程 eval 中保存 Gaussian render preview。
-  - 保存文件包括 `*_pred.png`、`*_target.png`、`*_mask.png`。
+  - 保存文件包括 `*_pred.png`、`*_target.png`、`*_mask.png` 和每个样本一份 `*_gaussians.ply`。
   - 训练输出目录为 `<train_log_dir>/<exp_name>/gaussian_renders/...`。
 
 - `evaluation/tester.py`
@@ -109,6 +109,7 @@ bash install_gaussian_cuda.sh
 - `--gaussian_delta_mu_max`：`tanh` 有界中心偏移的最大绝对值，单位为 world units。
 - `--gaussian_train_save_freq`：每 N 个训练 step 保存一次训练 render；`<=0` 表示关闭训练 step 保存。
 - `--gaussian_eval_save`：在训练过程 eval 和 `eval.py` 中保存 render。
+- `--gaussian_save_ply`：是否在每次保存渲染预览时，同时为每个样本导出经典 3DGS PLY；默认 `true`。
 - `--gaussian_save_max_images`：每次保存事件最多保存多少张视角图。
 
 示例：
@@ -139,6 +140,22 @@ eval_logs/<timestamp>-<eval_exp_name>-split=test-seed=<seed>/gaussian_renders/ev
 - `<sample>_<cam>_target.png`
 - `<sample>_<cam>_mask.png`
 
+每个被保存的样本还包含一份与相机视角无关的：
+
+- `<sample>_gaussians.ply`
+
+PLY 使用 binary little-endian 格式，并遵循经典 graphdeco 3DGS 属性命名：
+
+- `x/y/z`：预测 Gaussian world-space 中心。
+- `nx/ny/nz`：兼容字段，当前写 0。
+- `f_dc_0..2`：预测的 0 阶球谐颜色系数。
+- `f_rest_0..44`：为兼容常见 viewer 补齐，当前全部写 0，因此实际颜色仍然只有 0 阶 SH。
+- `opacity`：预测 opacity 转回 sigmoid 前的 logit。
+- `scale_0..2`：预测正尺度取自然对数，符合经典 3DGS PLY 参数化。
+- `rot_0..3`：归一化四元数，顺序与 graphdeco renderer 一致。
+
+导出的 PLY 只包含第 0 帧 `scene_exists` 有效场景点，可直接交给支持 graphdeco 3DGS PLY 的网页或桌面 viewer 做自由视点查看。坐标保留为 PointWorld 的 world-space 坐标。
+
 ## 验证结果
 
 已完成：
@@ -162,6 +179,9 @@ bash install_gaussian_cuda.sh
   - `--gaussian_use_projection_mask=true` 时会以每个初始点云投影像素为中心标记 `gaussian_mask_size x gaussian_mask_size` 区域，`mask_fraction` 随尺寸、点数、重叠和边界裁剪变化。
 - render 保存 smoke test：
   - 已在 `/tmp/pointworld_gaussian_cuda_test/gaussian_renders/smoke/step_00000001/` 写出 `pred.png`、`target.png`、`mask.png`。
+- PLY 导出 smoke test：
+  - 单个样本成功同时写出 `pred/target/mask` PNG 和 `gaussians.ply`。
+  - PLY 每个顶点包含 62 个 float 字段（248 bytes），其中 45 个 `f_rest_*` 为 0。
 
 ## 显存保护
 
