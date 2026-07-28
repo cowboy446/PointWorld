@@ -107,7 +107,7 @@ PY
     --input_list "$one_input_list" \
     --output_root "$BEHAVIOR_ROOT/flows" \
     --rank 0 \
-    --world_size 2 \
+    --world_size 1 \
     "${extra_args_array[@]}"
 
   processed=$((processed + 1))

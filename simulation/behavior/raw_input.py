@@ -22,17 +22,20 @@ import os
 import re
 import shutil
 import tempfile
+import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 POINTWORLD_CACHE_ENV = "POINTWORLD_CACHE_DIR"
 HF_TOKEN_ENV = "HF_TOKEN"
+HF_ENDPOINT_ENV = "HF_ENDPOINT"
+HF_DOWNLOAD_RETRIES_ENV = "POINTWORLD_HF_DOWNLOAD_RETRIES"
 BEHAVIOR_HF_ORG = "behavior-1k"
 BEHAVIOR_HF_REPO = "2025-challenge-rawdata"
 
 HF_DATASET_URL_RE = re.compile(
-    r"^https?://huggingface\.co/datasets/(?P<org>[^/]+)/(?P<repo>[^/]+)/(?P<mode>resolve|blob|raw)/(?P<rev>[^/]+)/(?P<file>.+)$"
+    r"^https?://[^/]+/datasets/(?P<org>[^/]+)/(?P<repo>[^/]+)/(?P<mode>resolve|blob|raw)/(?P<rev>[^/]+)/(?P<file>.+)$"
 )
 HDF5_MAGIC = b"\x89HDF\r\n\x1a\n"
 
@@ -180,7 +183,10 @@ def _build_hf_resolve_url(org: str, repo: str, revision: str, file_path: str) ->
     repo_q = quote(repo, safe="")
     revision_q = quote(revision, safe="")
     file_q = quote(file_path, safe="/")
-    return f"https://huggingface.co/datasets/{org_q}/{repo_q}/resolve/{revision_q}/{file_q}"
+    endpoint = os.environ.get(HF_ENDPOINT_ENV, "https://huggingface.co").strip().rstrip("/")
+    if not endpoint.startswith(("http://", "https://")):
+        raise ValueError(f"{HF_ENDPOINT_ENV} must be an HTTP(S) URL, got: {endpoint}")
+    return f"{endpoint}/datasets/{org_q}/{repo_q}/resolve/{revision_q}/{file_q}"
 
 
 def _extract_hf_parts(path: str) -> tuple[str, str, str, str]:
@@ -219,26 +225,53 @@ def _download_hf_file(url: str, local_path: str, token: str | None) -> None:
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
-    request = Request(url, headers=headers)
     try:
-        with urlopen(request, timeout=300) as response, open(tmp_path, "wb") as out_f:
-            shutil.copyfileobj(response, out_f)
-    except HTTPError as exc:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
-        if exc.code in {401, 403}:
-            raise RuntimeError(
-                f"Hugging Face download failed ({exc.code}) for {url}. "
-                "If this file is gated/private, set HF_TOKEN with read access."
-            ) from exc
-        raise RuntimeError(f"HTTP error while downloading {url}: {exc}") from exc
-    except URLError as exc:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
-        raise RuntimeError(f"Network error while downloading {url}: {exc}") from exc
-    except Exception:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
-        raise
+        max_attempts = max(1, int(os.environ.get(HF_DOWNLOAD_RETRIES_ENV, "8")))
+    except ValueError as exc:
+        raise ValueError(f"{HF_DOWNLOAD_RETRIES_ENV} must be an integer") from exc
 
-    os.replace(tmp_path, local_path)
+    last_error = None
+    for attempt in range(1, max_attempts + 1):
+        downloaded = os.path.getsize(tmp_path) if os.path.isfile(tmp_path) else 0
+        request_headers = dict(headers)
+        if downloaded:
+            request_headers["Range"] = f"bytes={downloaded}-"
+            print(f"[behavior raw cache] resuming at byte {downloaded}: {url}")
+
+        try:
+            request = Request(url, headers=request_headers)
+            with urlopen(request, timeout=300) as response:
+                # A server may ignore Range and return the whole file with 200.
+                append = downloaded > 0 and getattr(response, "status", None) == 206
+                with open(tmp_path, "ab" if append else "wb") as out_f:
+                    shutil.copyfileobj(response, out_f)
+            os.replace(tmp_path, local_path)
+            return
+        except HTTPError as exc:
+            last_error = exc
+            if exc.code in {401, 403}:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+                raise RuntimeError(
+                    f"Hugging Face download failed ({exc.code}) for {url}. "
+                    "If this file is gated/private, set HF_TOKEN with read access."
+                ) from exc
+            if exc.code == 416 and os.path.exists(tmp_path):
+                # The partial file may be stale or already complete; restart cleanly.
+                os.remove(tmp_path)
+            if exc.code not in {408, 416, 429} and not 500 <= exc.code < 600:
+                raise RuntimeError(f"HTTP error while downloading {url}: {exc}") from exc
+        except (URLError, TimeoutError, ConnectionError, OSError) as exc:
+            last_error = exc
+
+        if attempt < max_attempts:
+            delay = min(60, 2 ** (attempt - 1))
+            print(
+                f"[behavior raw cache] download attempt {attempt}/{max_attempts} failed: "
+                f"{last_error}; retrying in {delay}s"
+            )
+            time.sleep(delay)
+
+    raise RuntimeError(
+        f"Download failed after {max_attempts} attempts for {url}: {last_error}"
+    ) from last_error
