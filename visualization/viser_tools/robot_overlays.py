@@ -185,11 +185,35 @@ def build_robot_flows(
     # Decide path
     use_panda = (joint_positions is not None) and (gripper_positions is not None)
 
+    gripper_array = (
+        None if gripper_positions is None
+        else np.asarray(gripper_positions, dtype=np.float32)
+    )
+    if use_panda and gripper_array.ndim == 2 and gripper_array.shape[1] == 2:
+        # LIBERO uses the robosuite Panda hand URDF with two signed finger
+        # coordinates. The legacy visualization-only DROID builder accepts a
+        # single Robotiq aperture and cannot construct a faithful mesh overlay.
+        # The dataloader has already generated correctly transformed URDF point
+        # trajectories, so visualize those directly and omit only the
+        # incompatible decorative mesh overlays.
+        traj = (
+            np.asarray(robot_flows, dtype=np.float32)
+            if robot_flows is not None
+            else np.zeros((joint_positions.shape[0], 0, 3), dtype=np.float32)
+        )
+        gripper_flow = RobotFlow(
+            trajectories=traj.copy(), overlay_meshes=[], overlay_opacities=[]
+        )
+        full_flow = RobotFlow(
+            trajectories=traj.copy(), overlay_meshes=[], overlay_opacities=[]
+        )
+        return gripper_flow, full_flow, []
+
     if use_panda:
         g_flow, f_flow = _build_panda_flows(
             urdf_p,
             joint_positions=np.asarray(joint_positions, dtype=np.float32),
-            gripper_positions=np.asarray(gripper_positions, dtype=np.float32).reshape(-1),
+            gripper_positions=gripper_array.reshape(-1),
             overlay_indices=overlay_indices,
             total_samples=total_samples,
             min_samples_per_mesh=min_samples_per_mesh,

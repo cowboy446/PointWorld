@@ -92,7 +92,10 @@ def sample_transform_pipeline(dataset, data_dir, domain, mode, args, has_bimanua
         dataset
         .map(center_shift)
         .map(filter_within_bounds)
-        .map(partial(assert_camera_payload_resolution, expected_hw=(180, 320)))
+        .map(partial(
+            assert_camera_payload_resolution,
+            expected_hw=((256, 256) if "libero" in domain else (180, 320)),
+        ))
     )
     # -------------------------------------
     # mode-specific sample-specific transformations
@@ -169,6 +172,10 @@ def sample_transform_pipeline(dataset, data_dir, domain, mode, args, has_bimanua
         'scene_features',
         'scene_visibility',
         'scene_depth_valid_mask',
+        'scene_body_ids',
+        'scene_geom_ids',
+        'scene_entity_ids',
+        'scene_dense_preserve_mask',
         'robot_flows',
         'robot_features',
         'joint_positions',
@@ -243,7 +250,10 @@ def apply_release_pipeline_to_sample(
         sample = filter_within_bounds(sample)
 
     # Fail-fast: camera payloads must already match the release contract resolution.
-    sample = assert_camera_payload_resolution(sample, expected_hw=(180, 320))
+    sample = assert_camera_payload_resolution(
+        sample,
+        expected_hw=((256, 256) if "libero" in domain else (180, 320)),
+    )
 
     # -------------------------------------
     # mode-specific sample-specific transformations
@@ -332,6 +342,10 @@ def apply_release_pipeline_to_sample(
         'scene_features',
         'scene_visibility',
         'scene_depth_valid_mask',
+        'scene_body_ids',
+        'scene_geom_ids',
+        'scene_entity_ids',
+        'scene_dense_preserve_mask',
         'robot_flows',
         'robot_features',
         'joint_positions',

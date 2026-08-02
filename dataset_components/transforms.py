@@ -82,7 +82,15 @@ def sphere_crop_transform(
     while (spheres_used < max_num_spheres and
            (spheres_used == 0 or sample["scene_flows"].shape[1] > max_scene_points)):
         pts0 = sample["scene_flows"][0]
-        dist2robot, _ = robot_kdt.query(pts0, k=1)
+        preserve = sample.get("scene_dense_preserve_mask")
+        if preserve is None:
+            background_idx = np.arange(len(pts0), dtype=np.int64)
+        else:
+            background_idx = np.flatnonzero(~np.asarray(preserve[0], dtype=bool))
+        if background_idx.size == 0:
+            break
+        background_pts = pts0[background_idx]
+        dist2robot, _ = robot_kdt.query(background_pts, k=1)
 
         # pick the top-K farthest from robot
         cand_idx = np.argsort(-dist2robot)[:num_candidates]
@@ -91,7 +99,7 @@ def sphere_crop_transform(
         best_center = None
         best_r = None
 
-        scene_kdt = cKDTree(pts0)
+        scene_kdt = cKDTree(background_pts)
 
         for idx in cand_idx:
             d = dist2robot[idx]
@@ -99,7 +107,7 @@ def sphere_crop_transform(
                 continue
             r = min(max_radius, max(min_radius, d - buffer))
             # just get the count, not the full list
-            cnt = len(scene_kdt.query_ball_point(pts0[idx], r))
+            cnt = len(scene_kdt.query_ball_point(background_pts[idx], r))
             if cnt > best_gain:
                 best_gain = cnt
                 best_center = idx
@@ -109,8 +117,11 @@ def sphere_crop_transform(
             break
 
         # now remove them for real
-        idx_remove = scene_kdt.query_ball_point(pts0[best_center], best_r)
-        _erase_scene_indices(sample, np.array(idx_remove, dtype=np.int64))
+        local_remove = scene_kdt.query_ball_point(
+            background_pts[best_center], best_r
+        )
+        idx_remove = background_idx[np.asarray(local_remove, dtype=np.int64)]
+        _erase_scene_indices(sample, idx_remove)
         spheres_used += 1
 
     assert sample["scene_flows"].shape[1] > 0, (
@@ -192,25 +203,40 @@ def grid_sample_transform(sample, grid_size, mode):
         T = sample_dict[base_key].shape[0]
         N_og = sample_dict[base_key].shape[1]
 
-        # Flows
-        sample_dict[base_key] = sample_dict[base_key][:, idx_selected, :]
-
-        # Colors, normals, etc. if they exist
-        possible_extras = [
-            f"{prefix}_colors",
-            f"{prefix}_normals",
-            f"{prefix}_visibility",
-            f"{prefix}_depth_valid_mask",
-        ]
-        for ex_key in possible_extras:
-            if ex_key in sample_dict and sample_dict[ex_key].shape[0] == T and sample_dict[ex_key].shape[1] == N_og:
-                sample_dict[ex_key] = sample_dict[ex_key][:, idx_selected]
+        # Apply the same point correspondence to every temporal point field,
+        # including LIBERO body / geom provenance and preserve masks.
+        for key, value in list(sample_dict.items()):
+            if not key.startswith(f"{prefix}_") or not isinstance(value, np.ndarray):
+                continue
+            if value.ndim >= 2 and value.shape[0] == T and value.shape[1] == N_og:
+                sample_dict[key] = value[:, idx_selected, ...]
 
     # ---------------------------
     # 1) Scene Particles
     # ---------------------------
     if "scene_flows" in sample and sample["scene_flows"].shape[1] > 0:
-        idx_scene = select_indices(sample["scene_flows"][0])
+        points_t0 = sample["scene_flows"][0]
+        preserve = sample.get("scene_dense_preserve_mask")
+        if preserve is None:
+            idx_scene = select_indices(points_t0)
+        else:
+            if preserve.shape[:2] != sample["scene_flows"].shape[:2]:
+                raise ValueError(
+                    "scene_dense_preserve_mask must have shape (T, N) matching "
+                    f"scene_flows; got {preserve.shape} and "
+                    f"{sample['scene_flows'].shape}"
+                )
+            preserve_t0 = np.asarray(preserve[0], dtype=bool)
+            important_idx = np.flatnonzero(preserve_t0)
+            background_idx = np.flatnonzero(~preserve_t0)
+            sampled_background = background_idx[
+                select_indices(points_t0[background_idx])
+            ]
+            # Important points bypass voxel sampling, including cross-camera
+            # voxel deduplication.  Sorting preserves the merged-camera order.
+            idx_scene = np.sort(
+                np.concatenate((important_idx, sampled_background))
+            )
         apply_selection_to_times(sample, "scene", idx_scene)
 
     # ---------------------------
@@ -748,7 +774,14 @@ def chromatic_jitter_transform(sample, p=0.95, std=0.05):
 def enforce_max_num_points(sample, max_scene_points=None,
                            deterministic: bool = False, seed: int | None = None):
     """
-    Enforce maximum number of points by randomly subsampling if necessary.
+    Enforce the scene-point maximum while respecting selective sampling labels.
+
+    When ``scene_dense_preserve_mask`` is present, grid-eligible background
+    points are kept and only dense-preserved points are uniformly subsampled to
+    fill the remaining budget.  If the grid-sampled background alone exceeds
+    the limit, background is uniformly capped as the only feasible fallback.
+    Samples without this label retain the legacy uniform-global behavior.
+
     Adds flags to indicate if limits were applied.
     """
     # Initialize flags
@@ -761,14 +794,44 @@ def enforce_max_num_points(sample, max_scene_points=None,
             # Set flag
             sample['__scene_exceeds_max__'] = True
 
-            # Create indices for selection
+            # Create a sample-specific RNG for reproducible eval / overfit runs.
             if deterministic:
                 key = str(sample.get('__key__', ''))
                 base = 0 if seed is None else int(seed)
                 rs = np.random.RandomState(_stable_int_hash(base, key, 'scene'))
+            else:
+                rs = np.random
+
+            preserve = sample.get('scene_dense_preserve_mask')
+            if preserve is None:
                 idx = rs.choice(NS, max_scene_points, replace=False)
             else:
-                idx = np.random.choice(NS, max_scene_points, replace=False)
+                if preserve.shape[:2] != sample['scene_flows'].shape[:2]:
+                    raise ValueError(
+                        "scene_dense_preserve_mask must have shape (T, N) matching "
+                        f"scene_flows; got {preserve.shape} and "
+                        f"{sample['scene_flows'].shape}"
+                    )
+                preserve_mask = np.asarray(preserve[0], dtype=bool)
+                if not np.all(np.asarray(preserve, dtype=bool) == preserve_mask[None]):
+                    raise ValueError(
+                        "scene_dense_preserve_mask must be time-invariant"
+                    )
+                dense_idx = np.flatnonzero(preserve_mask)
+                background_idx = np.flatnonzero(~preserve_mask)
+                if len(background_idx) >= max_scene_points:
+                    # A total <= limit is otherwise impossible. This fallback
+                    # is expected to be rare after background voxel sampling.
+                    idx = rs.choice(
+                        background_idx, max_scene_points, replace=False
+                    )
+                else:
+                    dense_budget = max_scene_points - len(background_idx)
+                    if len(dense_idx) > dense_budget:
+                        dense_idx = rs.choice(
+                            dense_idx, dense_budget, replace=False
+                        )
+                    idx = np.concatenate((background_idx, dense_idx))
             idx = np.sort(idx)  # Sort to maintain order
 
             # Apply selection to all scene-related fields

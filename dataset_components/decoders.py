@@ -411,6 +411,15 @@ def _get_droid_scene_data(sample: dict) -> dict:
             'scene_visibility': sample[f"{camera_key}_scene_visibility"],
             'scene_depth_valid_mask': sample[f"{camera_key}_scene_depth_valid_mask"],
         }
+        for optional_field in (
+            'scene_body_ids',
+            'scene_geom_ids',
+            'scene_entity_ids',
+            'scene_dense_preserve_mask',
+        ):
+            optional_key = f"{camera_key}_{optional_field}"
+            if optional_key in sample:
+                scene_data[camera_key][optional_field] = sample[optional_key]
         # Add camera image data
         for img_key in ['initial_rgb', 'initial_depth', 'intrinsic', 'extrinsic']:
             key_new = f"{camera_key}_{img_key}"
@@ -435,6 +444,14 @@ def _flatten_camera_scene_data(decoded_scene_data: dict, raw_sample: dict) -> di
             camera_info['scene_depth_valid_mask'] if 'scene_depth_valid_mask' in camera_info
             else np.ones_like(camera_info['scene_visibility'])
         )
+        for optional_field in (
+            'scene_body_ids',
+            'scene_geom_ids',
+            'scene_entity_ids',
+            'scene_dense_preserve_mask',
+        ):
+            if optional_field in camera_info:
+                camera_data[f"{camera_key}_{optional_field}"] = camera_info[optional_field]
         for suffix in ['_initial_rgb', '_initial_depth', '_intrinsic', '_extrinsic']:
             full_key = f"{camera_key}{suffix}"
             if full_key in raw_sample:
@@ -462,11 +479,14 @@ def build_flow_sample(sample, domain, robot_sampler, max_robot_points: int,
         # Use SimDataDecoder for behavior (simulation) data
         sim_decoder = SimDataDecoder()
         decoded_scene_data = sim_decoder.decode_wds(sample)
-    elif 'droid' in domain:
+    elif 'droid' in domain or 'libero' in domain:
         # Handle droid (real) data directly
         decoded_scene_data = _get_droid_scene_data(sample)
     else:
-        raise ValueError(f"Unsupported domain: {domain}. Only 'behavior' and 'droid' are supported.")
+        raise ValueError(
+            f"Unsupported domain: {domain}. "
+            "Only 'behavior', 'droid', and 'libero' are supported."
+        )
     sampler_filter = gripper_filter if not (force_single_arm and gripper_filter == 'both') else 'both'
     robot_data = _get_robot_flows(sample, robot_sampler, max_robot_points, domain, sampler_filter, seed=seed if deterministic else None)
     camera_data = _flatten_camera_scene_data(decoded_scene_data, sample)

@@ -243,7 +243,14 @@ def _get_robot_flows(sample, robot_sampler, max_robot_points: int, domain: str,
         return _get_robot_flows_behavior(sample, robot_sampler, max_robot_points, gripper_filter, seed=seed)
     if 'droid' in domain:
         return _get_robot_flows_droid(sample, robot_sampler, max_robot_points, seed=seed)
-    raise ValueError(f"Unsupported domain: {domain}. Only 'behavior' and 'droid' are supported.")
+    if 'libero' in domain:
+        return _get_robot_flows_libero(
+            sample, robot_sampler, max_robot_points, seed=seed
+        )
+    raise ValueError(
+        f"Unsupported domain: {domain}. "
+        "Only 'behavior', 'droid', and 'libero' are supported."
+    )
 
 
 def _remove_filtered_gripper_data(sample, gripper_filter):
@@ -431,6 +438,66 @@ def _get_robot_flows_droid(sample, robot_sampler: TorchRobotSampler, max_robot_p
     return robot_data
 
 
+def _get_robot_flows_libero(
+    sample,
+    robot_sampler: TorchRobotSampler,
+    max_robot_points: int,
+    seed: int | None = None,
+):
+    """Generate LIBERO PandaHand points from raw 7+2 MuJoCo qpos."""
+    robot_sampler.presample(max_robot_points, seed=seed)
+    device, dtype = robot_sampler.device, robot_sampler.dtype
+    arm = torch.as_tensor(
+        sample["joint_positions"], device=device, dtype=dtype
+    )
+    fingers = torch.as_tensor(
+        sample["gripper_positions"], device=device, dtype=dtype
+    )
+    if arm.ndim != 2 or arm.shape[1] != 7:
+        raise ValueError(f"LIBERO joint_positions must be (T,7), got {arm.shape}")
+    if fingers.shape != (arm.shape[0], 2):
+        raise ValueError(
+            f"LIBERO gripper_positions must be (T,2), got {fingers.shape}"
+        )
+    expected = [f"panda_joint{i}" for i in range(1, 8)]
+    expected += ["panda_finger_joint1", "panda_finger_joint2"]
+    missing = [name for name in expected if name not in robot_sampler.joint_names]
+    if missing:
+        raise KeyError(f"Missing expected LIBERO Panda joints in URDF: {missing}")
+    joint_dict = {
+        name: arm[:, index].reshape(-1)
+        for index, name in enumerate(expected[:7])
+    }
+    joint_dict["panda_finger_joint1"] = fingers[:, 0].clamp(0.0, 0.04).reshape(-1)
+    # MuJoCo stores finger2 with the opposite sign. The URDF mirrors its axis
+    # and therefore expects a positive opening distance.
+    joint_dict["panda_finger_joint2"] = (-fingers[:, 1]).clamp(
+        0.0, 0.04
+    ).reshape(-1)
+    flows, colors, normals = robot_sampler.compute_points(joint_dict)
+    flows = flows.cpu().numpy()
+    colors = colors.cpu().numpy()
+    normals = normals.cpu().numpy()
+    root = np.asarray(sample["robot_root_transform"], dtype=np.float32)
+    if root.shape != (4, 4):
+        raise ValueError(f"robot_root_transform must be (4,4), got {root.shape}")
+    flows = (
+        np.einsum("ij,tnj->tni", root[:3, :3], flows) + root[:3, 3]
+    ).astype(np.float32)
+    normals = np.einsum(
+        "ij,tnj->tni", root[:3, :3], normals
+    ).astype(np.float32)
+    robot_data = {
+        "robot_flows": flows,
+        "robot_normals": normals,
+        "robot_colors": colors,
+    }
+    for key in sample:
+        if not key.startswith("camera_"):
+            robot_data[key.split(".")[0]] = sample[key]
+    return robot_data
+
+
 __all__ = [
     "determine_gripper_filter",
     "_deterministic_single_arm_choice",
@@ -442,4 +509,5 @@ __all__ = [
     "canonicalize_gripper_keys_and_flags",
     "_get_robot_flows_behavior",
     "_get_robot_flows_droid",
+    "_get_robot_flows_libero",
 ]

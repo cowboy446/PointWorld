@@ -23,6 +23,7 @@ LOCAL_DATASET_DIR = os.environ.get('LOCAL_DATASET_DIR', '/dataset')
 DOMAIN_TO_DATA_DIR = {
     'behavior': f'{LOCAL_DATASET_DIR}/behavior/wds',
     'droid': f'{LOCAL_DATASET_DIR}/droid/wds',
+    'libero': f'{LOCAL_DATASET_DIR}/libero/wds',
 }
 
 def str_to_bool(value):
@@ -246,7 +247,7 @@ def parse_args(skip_command_line=False):
         )
     # validate and default
     args.domains = [name.strip() for name in args.domains.split(',')] if args.domains else []
-    if any(domain.startswith('droid') for domain in args.domains):
+    if any(domain.startswith(('droid', 'libero')) for domain in args.domains):
         args.dynamics_head_init_scale = 1.0
     else:
         args.dynamics_head_init_scale = 0.0

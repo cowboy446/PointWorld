@@ -271,6 +271,13 @@ class RobotSampler:
         # Build zero joint configuration for reference link transforms
         zero_cfg = {jn: torch.zeros(1, device=self.device, dtype=self.dtype) for jn in self.joint_names}
         link_tf_ref = self.chain.forward_kinematics(zero_cfg)
+        mesh_owner = {}
+        for link in self.robot_urdf.links:
+            for visual in link.visuals:
+                if visual.geometry.mesh is None:
+                    continue
+                for mesh in visual.geometry.mesh.meshes:
+                    mesh_owner[id(mesh)] = link.name
 
         for i, mesh in enumerate(fk_ref):
             mesh_name = get_mesh_name(mesh, i)
@@ -281,17 +288,21 @@ class RobotSampler:
             mesh_T_np = fk_ref[mesh]  # numpy (4,4)
             mesh_T = torch.from_numpy(mesh_T_np.astype(np.float32)).to(self.device, dtype=self.dtype)
 
-            # Find best matching link by comparing transforms directly
-            matched_link_name = None
-            min_err = float('inf')
-            
-            for link_name, link_tf in link_tf_ref.items():
-                link_mat = link_tf.get_matrix()[0].to(self.device, dtype=self.dtype)  # (4,4)
-                # Compute Frobenius norm difference
-                err = torch.norm(link_mat - mesh_T, p='fro').item()
-                if err < min_err:
-                    min_err = err
-                    matched_link_name = link_name
+            # urdfpy preserves mesh object identity, so prefer the visual's
+            # actual owner link. Nearest-pose matching is ambiguous for
+            # identical Panda finger meshes at the zero configuration.
+            matched_link_name = mesh_owner.get(id(mesh))
+            if matched_link_name not in link_tf_ref:
+                matched_link_name = None
+                min_err = float('inf')
+                for link_name, link_tf in link_tf_ref.items():
+                    link_mat = link_tf.get_matrix()[0].to(
+                        self.device, dtype=self.dtype
+                    )
+                    err = torch.norm(link_mat - mesh_T, p='fro').item()
+                    if err < min_err:
+                        min_err = err
+                        matched_link_name = link_name
             assert matched_link_name is not None, f"No link found for mesh '{mesh_name}'"
 
             # Extract link transform (4×4)
@@ -302,13 +313,6 @@ class RobotSampler:
             self._mesh_offsets[mesh_name] = offset_T.detach()
             self._mesh_to_link[mesh_name] = matched_link_name
 
-        # Tri-gripper disambiguation: ensure two tri finger meshes bind to distinct links
-        if ("panda_finger_joint1" in self.joint_names) and ("panda_finger_joint2" in self.joint_names):
-            tri_meshes = sorted([mn for mn in self._mesh_names if "tri_finger.obj" in mn])
-            if len(tri_meshes) >= 2 and ("panda_rightfinger" in link_tf_ref) and ("panda_leftfinger" in link_tf_ref):
-                self._mesh_to_link[tri_meshes[0]] = "panda_rightfinger"
-                self._mesh_to_link[tri_meshes[1]] = "panda_leftfinger"
-        
         print(f"Initialized mesh mappings for {len(self._mesh_names)} meshes")
     
     def presample(self, num_points: int, gripper_filter: str = 'both', seed: int | None = None) -> None:
@@ -332,9 +336,16 @@ class RobotSampler:
         mesh_data = []
         for i, mesh in enumerate(fk_ref):
             mesh_name = get_mesh_name(mesh, i)
+            link_name = self._mesh_to_link.get(mesh_name, "")
+            owner_is_gripper = any(
+                keyword in link_name.lower()
+                for keyword in ("finger", "gripper", "panda_hand")
+            )
 
             # Filter for gripper meshes if needed
-            if self.gripper_only and not is_gripper(mesh_name):
+            if self.gripper_only and not (
+                is_gripper(mesh_name) or owner_is_gripper
+            ):
                 continue
             
             # Apply new gripper filter
@@ -347,7 +358,6 @@ class RobotSampler:
                 continue
 
             if self._link_whitelist is not None:
-                link_name = self._mesh_to_link.get(mesh_name, None)
                 if link_name not in self._link_whitelist:
                     continue
             

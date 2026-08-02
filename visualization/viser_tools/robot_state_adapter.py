@@ -35,7 +35,7 @@ class RobotKinematics:
 
     # Panda (droid): joints + scalar gripper aperture
     panda_joint_positions: Optional[np.ndarray] = None  # (T, 7)
-    panda_gripper_positions: Optional[np.ndarray] = None  # (T,)
+    panda_gripper_positions: Optional[np.ndarray] = None  # (T,) or LIBERO (T,2)
 
     # Generic URDF (e.g., R1Pro/behavior): joint name map + full joint vector
     joint_names: Optional[Sequence[str]] = None  # names corresponding to columns of joint_positions_full
@@ -78,9 +78,14 @@ def parse_robot_kinematics(sample: Dict[str, object]) -> RobotKinematics:
     if ("joint_positions" in sample) and (sample.get("joint_positions") is not None) \
        and ("gripper_positions" in sample) and (sample.get("gripper_positions") is not None):
         jp = _ensure_float32(sample["joint_positions"])  # (T, 7) for Panda
-        gp_raw = np.asarray(sample["gripper_positions"])  # shape can be (T,) or (T,1)
+        gp_raw = np.asarray(sample["gripper_positions"])  # (T,), (T,1), or LIBERO (T,2)
         if gp_raw.ndim == 2 and gp_raw.shape[1] == 1:
             gp = gp_raw[:, 0].astype(np.float32, copy=False)
+        elif gp_raw.ndim == 2 and gp_raw.shape[1] == 2:
+            # Preserve LIBERO's two raw signed finger coordinates. Flattening
+            # this to 2T values makes the legacy DROID overlay builder mistake
+            # the finger dimension for time.
+            gp = _ensure_float32(gp_raw)
         else:
             gp = _ensure_float32(gp_raw).reshape(-1)
         kin.panda_joint_positions = jp

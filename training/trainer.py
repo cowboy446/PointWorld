@@ -51,7 +51,13 @@ class Trainer:
         # Setup save dir + wandb (simplified: train-from-scratch semantics)
         # ----------------------------------------------------------------------------------
         self.exp_name, self.wandb_id = self.setup_wandb(exp_name=self.args.exp_name)
-        self.save_dir = self.setup_save_dir(exp_name=self.exp_name)
+        if self.inference_only and self.args.model_path:
+            # Evaluation is read-only with respect to training logs.  Reuse the
+            # checkpoint directory instead of creating an empty ``dummy-*``
+            # experiment directory for wandb's disabled run.
+            self.save_dir = os.path.dirname(os.path.abspath(self.args.model_path))
+        else:
+            self.save_dir = self.setup_save_dir(exp_name=self.exp_name)
         checkpoint = self.load_checkpoint_from_path(self.args.model_path)
         if checkpoint is not None:
             context = f"training checkpoint '{self.args.model_path}'"
@@ -212,7 +218,14 @@ class Trainer:
                 mode="online" if not disable_wandb else "disabled",
                 config=self.args.og_args
             )
-            self.exp_name, self.wandb_id = self.wandb_run.name, self.wandb_run.id
+            # A disabled wandb run replaces the requested name with a random
+            # ``dummy-*`` value.  Keep the CLI experiment name so local
+            # checkpoints have a stable, scriptable path.
+            if disable_wandb and exp_name:
+                self.exp_name = exp_name
+            else:
+                self.exp_name = self.wandb_run.name
+            self.wandb_id = self.wandb_run.id
         else:
             self.exp_name = None
             self.wandb_id = None
@@ -382,7 +395,14 @@ class Trainer:
             # Iterate through one epoch using the shared train_iter
             for train_batch_idx in range(len(self.train_dataloader)):
                 # Get next batch from shared iterator
-                train_batch = next(self.train_iter)
+                try:
+                    train_batch = next(self.train_iter)
+                except StopIteration:
+                    # Non-resampled deterministic WebDatasets are finite.  A
+                    # persistent iterator therefore has to be recreated when
+                    # training crosses an epoch boundary.
+                    self.train_iter = iter(self.train_dataloader)
+                    train_batch = next(self.train_iter)
                 log_dict = dict()
 
                 # Calculate adjusted batch count for frequency checks (equivalent to elapsed time)
@@ -548,10 +568,18 @@ class Trainer:
 
                 # Rank 0 logs to W&B
                 if self.rank == 0:
+                    local_metrics = {
+                        key: (value.item() if isinstance(value, torch.Tensor) and value.numel() == 1 else value)
+                        for key, value in log_dict.items()
+                    }
+                    local_metrics["timestamp"] = datetime.now().isoformat()
+                    with open(os.path.join(self.save_dir, "metrics.jsonl"), "a", encoding="utf-8") as stream:
+                        stream.write(json.dumps(local_metrics, allow_nan=False) + "\n")
                     wandb.log(log_dict)
                 log_dict.clear()
 
                 if self.args.max_train_steps > 0 and curr_steps >= self.args.max_train_steps:
+                    self._save_checkpoint_now(curr_steps, log_dict={})
                     if self.rank == 0:
                         tepoch.close()
                     return 0

@@ -20,6 +20,7 @@ import torch
 ROBOT_URDF_BY_DOMAIN = {
     "behavior": "assets/r1pro/urdf/r1pro.urdf",
     "droid": "assets/franka_description/franka_panda_robotiq_2f85.urdf",
+    "libero": "assets/panda_description/urdf/panda_arm_hand.urdf",
 }
 
 __all__ = [
@@ -90,6 +91,8 @@ def resolve_default_robot_urdf(domains) -> str:
     doms = [str(d).lower() for d in domains]
     if any("droid" in d for d in doms):
         return ROBOT_URDF_BY_DOMAIN["droid"]
+    if any("libero" in d for d in doms):
+        return ROBOT_URDF_BY_DOMAIN["libero"]
     if any("behavior" in d for d in doms):
         return ROBOT_URDF_BY_DOMAIN["behavior"]
     raise ValueError(f"Unsupported domains for robot URDF: {domains}")

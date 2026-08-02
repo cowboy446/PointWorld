@@ -121,14 +121,17 @@ def build_dataset(data_dir, domain, mode, args, rank=0, has_bimanual_robot=False
 
     # Initialize robot sampler once for this dataset (TorchRobotSampler on CPU).
     urdf_path = resolve_robot_urdf(domain)
-    if "droid" in domain or "behavior" in domain:
+    if "droid" in domain or "behavior" in domain or "libero" in domain:
         robot_sampler = TorchRobotSampler(
             urdf_path=urdf_path,
             gripper_only=RELEASE_GRIPPER_ONLY,
             device="cpu",
         )
     else:
-        raise ValueError(f"Unsupported domain '{domain}' for robot sampler (expected droid or behavior).")
+        raise ValueError(
+            f"Unsupported domain '{domain}' for robot sampler "
+            "(expected droid, behavior, or libero)."
+        )
 
     # shuffle the shard paths
     random.Random(args.seed + rank).shuffle(shard_paths)

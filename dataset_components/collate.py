@@ -17,9 +17,6 @@ import re
 
 import torch
 
-from dataset_components.constants import RELEASE_WEIGHT_GAMMA
-
-
 def custom_collate_fn(batch, args):
     """
     Collate function that pads the variable number of points across samples
@@ -249,25 +246,18 @@ def custom_collate_fn(batch, args):
 
     # -------- final point weight tensor ------------------------------- #
     device = collated['scene_exists'].device
-    selector_gt = collated['scene_selector_gt'].to(device)           # (B,T,N)
-    moved = collated['scene_moved_mask'].bool().squeeze(-1).to(device)
-    static = collated['scene_static_mask'].bool().squeeze(-1).to(device)
     context = collated['scene_context_mask'].bool().squeeze(-1).to(device)
     exists = collated['scene_exists'].bool().squeeze(-1).to(device)
     supervised = collated['scene_supervised_mask'].bool().squeeze(-1).to(device)
     pred = ~context
     pred_exists_supervised = pred & exists & supervised
-    # num_valid_supervision = pred_exists_supervised.sum()
+    # Scene sampling already controls the moving/static point balance. Give
+    # every valid prediction point equal loss mass here so that the soft motion
+    # selector remains a metric label only and cannot re-weight supervision a
+    # second time.
+    weights = pred_exists_supervised.to(dtype=torch.float64)
 
-    B, T, N = selector_gt.shape
-    weights = torch.zeros((B, T, N), dtype=torch.float64, device=device)
-
-    w = selector_gt.pow(RELEASE_WEIGHT_GAMMA)
-    w[~pred_exists_supervised] = 0.0
-    weights = w
-
-    # divide by number of valid supervision because we later will take the sum of weights * distance
-    # weights_sum = num_valid_supervision
+    # Normalize because the loss later sums weights * per-point loss.
     weights_norm = weights.sum().clamp(min=1.0)
     weights = weights / weights_norm
 
