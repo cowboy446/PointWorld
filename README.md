@@ -56,6 +56,8 @@ If you find this work useful in your research, please cite using the following B
 <a id="table-of-contents"></a>
 ## 🗂️ Table of Contents
 
+LIBERO 用户请先阅读 [`LIBERO服务器训练说明.md`](LIBERO服务器训练说明.md)。
+
 - [Important Notes](#important-notes)
 - [Setup](#setup)
 - [Datasets And Checkpoints](#datasets-and-checkpoints)

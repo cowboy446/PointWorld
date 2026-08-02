@@ -568,8 +568,19 @@ class Trainer:
 
                 # Rank 0 logs to W&B
                 if self.rank == 0:
+                    def _json_safe_metric(value):
+                        if isinstance(value, torch.Tensor) and value.numel() == 1:
+                            value = value.item()
+                        # A batch can legitimately contain no moved or no static
+                        # points. Those category metrics are NaN by definition;
+                        # encode them as JSON null instead of crashing an
+                        # otherwise finite training step.
+                        if isinstance(value, (float, np.floating)) and not math.isfinite(float(value)):
+                            return None
+                        return value
+
                     local_metrics = {
-                        key: (value.item() if isinstance(value, torch.Tensor) and value.numel() == 1 else value)
+                        key: _json_safe_metric(value)
                         for key, value in log_dict.items()
                     }
                     local_metrics["timestamp"] = datetime.now().isoformat()
