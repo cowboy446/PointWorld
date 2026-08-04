@@ -3,7 +3,7 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="${POINTWORLD_PYTHON:-python}"
-: "${DATA_DIR:?请设置 DATA_DIR 为 LIBERO PointWorld WebDataset 的绝对路径}"
+: "${DATA_DIR:?请设置 DATA_DIR 为 LIBERO PointWorld 数据集（WDS 或 indexed H5）的绝对路径}"
 STATS_DIR="${STATS_DIR:-${REPO_DIR}/stats/libero_scene3_20260802}"
 EXP_NAME="${EXP_NAME:-libero-scene3-uniform-cap12k}"
 LOG_DIR="${LOG_DIR:-${REPO_DIR}/train_logs}"

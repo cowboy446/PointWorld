@@ -38,6 +38,29 @@ flash-attn 版本不同，先按 `README.md` 完成环境验证。
 
 ## 3. 上传并检查数据
 
+训练读取器同时支持原有 WebDataset `.tar` 和 indexed H5。只需让 `DATA_DIR`
+指向数据集根目录，代码会按当前 split 自动检测：若 `train/*.h5`（或测试时的
+`test/*.h5`）存在则使用 H5 map-style 随机读取，否则回退到 WDS。一次训练不能
+混合两种存储格式。
+
+推荐直接上传 replay 产生的 indexed H5，目录结构为：
+
+```text
+pointworld_indexed_h5/
+├── metadata_rank0.json
+├── split_manifest.json
+├── train/
+│   └── libero-train-demo_*.h5
+└── test/
+    └── libero-test-demo_*.h5
+```
+
+每个 demo 对应一个 H5 shard，文件内部带 clip index；训练使用 map-style
+DataLoader 和随机 sampler，因此不需要把 H5 再转换成 tar，也支持多 worker 与
+DDP 随机采样。
+
+如果使用旧 WDS，仍可按下面方法从 consolidated H5 转换：
+
 若已有 replay 生成的 consolidated H5，可直接使用仓库内的紧凑转换脚本：
 
 ```bash
@@ -69,7 +92,7 @@ export DATA_DIR=/absolute/path/to/pointworld_wds
 export STATS_DIR=$PWD/stats/libero_scene3_20260802
 ```
 
-脚本会拒绝相对 `DATA_DIR`，从而避免 WebDataset 在错误工作目录下解析路径。
+脚本会拒绝相对 `DATA_DIR`，从而避免数据在错误工作目录下解析路径。
 
 当前紧凑格式把以下四个随点不随时间变化的字段保存为 `(N,)`，不会在磁盘中
 重复 11 帧：
@@ -231,7 +254,7 @@ ssh -L 8080:localhost:8080 user@server
 三个 shell 脚本都采用环境变量配置，不需要修改脚本本身。重要变量包括：
 
 - `POINTWORLD_PYTHON`：Python 解释器，默认 `python`。
-- `DATA_DIR`：WDS 绝对路径，必填。
+- `DATA_DIR`：WDS 或 indexed H5 数据集根目录的绝对路径，必填。
 - `STATS_DIR`：normalization statistics 目录。
 - `EXP_NAME`、`NUM_EPOCHS`、`MAX_TRAIN_STEPS`。
 - `LOG_DIR`：训练日志和 checkpoint 根目录。

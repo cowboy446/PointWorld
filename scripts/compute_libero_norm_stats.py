@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 
 from arguments import parse_args as pointworld_default_args
-from dataset_components.dataloader import build_dataset
+from dataset_components.dataloader import build_dataloader
 
 
 class Moments:
@@ -55,18 +55,20 @@ def main():
     args.eval_max_num_cameras = cli.num_cameras
     args.max_scene_points = cli.max_scene_points
     args.max_robot_points = cli.max_robot_points
-    dataset = build_dataset(
-        str(cli.data_dir.resolve()), "libero", "test", args,
-        override_splits="train",
+    args.batch_size = 1
+    args.num_workers = 0
+    args.eval_num_workers = 0
+    loader, _ = build_dataloader(
+        args, "test", override_splits="train",
     )
     robot = Moments()
     scene = Moments()
     per_step = [Moments() for _ in range(11)]
     count = 0
-    for sample in dataset:
-        robot.update(sample["robot_features"].numpy())
-        scene.update(sample["scene_features"].numpy())
-        relative = sample["gt_scene_flows_relative"].numpy()
+    for sample in loader:
+        robot.update(sample["robot_features"][0].numpy())
+        scene.update(sample["scene_features"][0].numpy())
+        relative = sample["gt_scene_flows_relative"][0].numpy()
         if relative.shape[0] != 11:
             raise ValueError(f"Expected 11 frames, got {relative.shape}")
         for timestep in range(11):

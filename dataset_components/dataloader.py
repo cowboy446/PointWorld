@@ -20,7 +20,15 @@ import random
 from functools import partial
 
 import numpy as np
+import torch
 import webdataset as wds
+from torch.utils.data import (
+    ConcatDataset,
+    DataLoader,
+    DistributedSampler,
+    RandomSampler,
+    SequentialSampler,
+)
 
 from dataset_components.cameras import sample_cameras
 from dataset_components.collate import custom_collate_fn
@@ -29,10 +37,24 @@ from dataset_components.constants import (
     RELEASE_TRAIN_SPLITS,
 )
 from dataset_components.decoders import decode_data, build_flow_sample
+from dataset_components.indexed_h5 import LiberoIndexedH5Dataset
 from dataset_components.pipeline import sample_transform_pipeline
 from dataset_components.robot import canonicalize_gripper_keys_and_flags
 from robot_sampler import RobotSampler as TorchRobotSampler
 from utils import resolve_robot_urdf
+
+
+class _AutoEpochDistributedSampler(DistributedSampler):
+    """Advance the deterministic DDP shuffle whenever a new iterator starts."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._next_epoch = 0
+
+    def __iter__(self):
+        self.set_epoch(self._next_epoch)
+        self._next_epoch += 1
+        return super().__iter__()
 
 
 def gather_shard_paths(data_dir, splits, rank=0):
@@ -107,6 +129,114 @@ def _resolve_requested_splits(mode, args, override_splits=None):
     if mode == 'train':
         return RELEASE_TRAIN_SPLITS
     return mode
+
+
+def gather_indexed_h5_paths(data_dir, splits):
+    """Return compact H5 shards for one or more split directories."""
+    base = data_dir
+    if not os.path.isabs(base):
+        base = os.path.join(os.path.dirname(__file__), base)
+    split_names = [splits] if isinstance(splits, str) else list(splits)
+    paths = []
+    for split in split_names:
+        paths.extend(sorted(glob.glob(os.path.join(base, str(split), "*.h5"))))
+    return paths
+
+
+def _build_indexed_h5_dataloader(
+    args,
+    mode,
+    rank,
+    world_size,
+    override_splits=None,
+):
+    """Build the map-style compact H5 path using the unchanged transforms."""
+    requested_splits = _resolve_requested_splits(mode, args, override_splits)
+    has_bimanual_robot = any("behavior" in domain for domain in args.domains)
+    datasets = []
+    shard_count = 0
+    for data_dir, domain in zip(args.data_dirs, args.domains):
+        paths = gather_indexed_h5_paths(data_dir, requested_splits)
+        if not paths:
+            if mode == "train":
+                raise FileNotFoundError(
+                    f"No indexed H5 shards for {requested_splits} under {data_dir}"
+                )
+            return None, {}
+        if "libero" not in domain:
+            raise ValueError(
+                "Indexed H5 v1 currently supports LIBERO only; "
+                f"got domain={domain!r}"
+            )
+        robot_sampler = TorchRobotSampler(
+            urdf_path=resolve_robot_urdf(domain),
+            gripper_only=RELEASE_GRIPPER_ONLY,
+            device="cpu",
+        )
+        datasets.append(
+            LiberoIndexedH5Dataset(
+                paths,
+                mode=mode,
+                args=args,
+                robot_sampler=robot_sampler,
+                rank=rank,
+                has_bimanual_robot=has_bimanual_robot,
+            )
+        )
+        shard_count += len(paths)
+    dataset = datasets[0] if len(datasets) == 1 else ConcatDataset(datasets)
+    total_samples = len(dataset)
+    if total_samples == 0:
+        raise ValueError("Indexed H5 dataset is empty")
+
+    if world_size > 1:
+        sampler = _AutoEpochDistributedSampler(
+            dataset,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=(mode == "train"),
+            seed=args.seed,
+            drop_last=False,
+        )
+    elif mode == "train":
+        generator = torch.Generator()
+        generator.manual_seed(args.seed + rank)
+        sampler = RandomSampler(dataset, generator=generator)
+    else:
+        sampler = SequentialSampler(dataset)
+
+    num_workers = args.num_workers
+    if mode == "train" and args.deterministic_train:
+        num_workers = 0
+    if mode != "train":
+        num_workers = min(num_workers, args.eval_num_workers)
+    dataloader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        sampler=sampler,
+        shuffle=False,
+        collate_fn=partial(custom_collate_fn, args=args),
+        num_workers=num_workers,
+        pin_memory=True,
+        persistent_workers=(num_workers > 0),
+    )
+    if rank == 0:
+        split_label = (
+            requested_splits if isinstance(requested_splits, str)
+            else "+".join(requested_splits)
+        )
+        print(
+            f"[indexed-h5] {mode}({split_label}) shards={shard_count} "
+            f"samples={total_samples} random_access={mode == 'train'}"
+        )
+    info = {
+        "total_samples": int(total_samples),
+        "total_batches_needed": int(np.ceil(total_samples / args.batch_size)),
+        "batches_per_rank": len(dataloader),
+        "world_size": int(world_size),
+        "storage_format": "indexed_h5",
+    }
+    return dataloader, info
 
 
 def build_dataset(data_dir, domain, mode, args, rank=0, has_bimanual_robot=False, override_splits=None, force_resampled_eval=False):
@@ -198,6 +328,22 @@ def build_dataloader(args, mode, rank=0, world_size=1, override_splits=None, for
     assert isinstance(args.data_dirs, list), f'expected data_dirs to be a list, got {args.data_dirs}'
     assert isinstance(args.domains, list), f'expected domains to be a list, got {args.domains}'
     assert len(args.data_dirs) == len(args.domains), f'expected data_dirs and domains to have one to one mapping, got {len(args.data_dirs)} and {len(args.domains)}'
+
+    requested_splits = _resolve_requested_splits(mode, args, override_splits)
+    indexed_flags = [
+        bool(gather_indexed_h5_paths(data_dir, requested_splits))
+        for data_dir in args.data_dirs
+    ]
+    if any(indexed_flags):
+        if not all(indexed_flags):
+            raise ValueError(
+                "Mixing indexed H5 and WebDataset domains in one loader is "
+                "not supported yet"
+            )
+        return _build_indexed_h5_dataloader(
+            args, mode, rank, world_size,
+            override_splits=override_splits,
+        )
 
     use_eval_override = getattr(args, '_eval_override_active', False)
     training_domains = getattr(args, 'train_domains_for_eval', args.domains) if use_eval_override else args.domains
