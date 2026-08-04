@@ -44,8 +44,11 @@ flash-attn 版本不同，先按 `README.md` 完成环境验证。
 python scripts/convert_libero_h5_to_wds.py \
   /absolute/path/to/libero_clips.h5 \
   /absolute/path/to/pointworld_wds \
-  --train-fraction 0.8 --seed 512026
+  --train-fraction 0.8 --seed 0
 ```
+
+这里的 split seed 固定为 `0`，与当前 Scene3 数据的 40/10 demo、
+1,607/415 clip 标准划分一致；训练采样 seed 仍使用 `512026`。
 
 把生成的 `pointworld_wds` 整个目录上传到服务器，目录必须保留为：
 
