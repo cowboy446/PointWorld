@@ -146,20 +146,32 @@ DATA_DIR="$DATA_DIR" STATS_DIR="$STATS_DIR" \
 
 ### 四卡 DDP 训练（GPU 1–4）
 
-`scripts/train_libero_ddp.sh` 默认使用物理 GPU 1、2、3、4，并按每个 DDP
-进程 batch size 22 启动，因此默认全局有效 batch size 为 88：
+`scripts/train_libero_ddp.sh` 是固定配置的短脚本，默认使用物理 GPU 1、2、3、4：
 
 ```bash
-CUDA_VISIBLE_DEVICES=1,2,3,4 NUM_GPUS=4 \
-BATCH_SIZE=22 NUM_WORKERS=16 EVAL_NUM_WORKERS=5 \
-EVAL_FREQ=-1 SAVE_FREQ=300 \
-DATA_DIR="$DATA_DIR" STATS_DIR="$STATS_DIR" \
-EXP_NAME=libero-scene3-uniform-cap12k-ddp4 \
-  ./scripts/train_libero_ddp.sh
+./scripts/train_libero_ddp.sh
 ```
 
-这里 `EVAL_FREQ=-1` 表示关闭训练中评估；`SAVE_FREQ=300` 表示每 300 个全局
-batch 计数保存一次。若显存不足，先减小 `BATCH_SIZE`，不要改变数据点数规则。
+脚本中的 `torchrun --nproc_per_node=4` 会创建四个 DDP 进程。不能改成普通的
+`python train.py --distributed=True`，因为训练代码通过 `env://` 读取
+`LOCAL_RANK` 等变量，普通 Python 进程不会自动提供这些变量。
+
+固定训练配置如下：
+
+- 每卡 batch size 22，全局有效 batch size 88；
+- `num_workers=16`、`eval_num_workers=5`；
+- `eval_freq=-1` 关闭训练中评估，`save_freq=300`；
+- 两个相机、12,000 scene points、1,024 robot points；
+- `ptv3_size=small`、`predictor_dim=128`、patch size 128。
+
+这里使用 small/128 是为了解决 base/256 在每卡 batch 22、LIBERO 每样本约
+12,000 场景点并附带 11 帧机器人点流时的显存压力。它保留 batch size 和点数
+规则；直接使用 base/256 会显著增加 PTv3 激活与特征显存。脚本顶部只保留
+`DATA_DIR`、`STATS_DIR`、`EXP_NAME` 三个可覆盖变量，例如：
+
+```bash
+EXP_NAME=my_libero_run ./scripts/train_libero_ddp.sh
+```
 
 ## 7. 测试集评估
 
