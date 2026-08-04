@@ -13,7 +13,7 @@ EXP_NAME="${EXP_NAME:-pointworld_libero_scene3_small_cap12k_ddp4gpu}"
 
 export CUDA_VISIBLE_DEVICES=1,2,3,4
 export OMP_NUM_THREADS=1
-export WANDB_MODE="${WANDB_MODE:-disabled}"
+export WANDB_MODE="${WANDB_MODE:-online}"
 
 exec torchrun --standalone --nproc_per_node=4 train.py \
   --distributed=True \

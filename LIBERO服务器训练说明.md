@@ -173,6 +173,12 @@ DATA_DIR="$DATA_DIR" STATS_DIR="$STATS_DIR" \
 EXP_NAME=my_libero_run ./scripts/train_libero_ddp.sh
 ```
 
+W&B 默认使用在线模式；临时禁用时可运行：
+
+```bash
+WANDB_MODE=disabled ./scripts/train_libero_ddp.sh
+```
+
 2026-08-04 已在 4×A100 80 GB（物理 GPU 1–4）上用该脚本实测：成功完成
 至少 10 个优化 step，每卡 batch 22，显存约 39.7–44.9 GB，没有 OOM。
 对应默认实验日志为：
