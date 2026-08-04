@@ -419,7 +419,24 @@ def _get_droid_scene_data(sample: dict) -> dict:
         ):
             optional_key = f"{camera_key}_{optional_field}"
             if optional_key in sample:
-                scene_data[camera_key][optional_field] = sample[optional_key]
+                values = np.asarray(sample[optional_key])
+                frame_count, point_count = scene_data[camera_key][
+                    'scene_flows'
+                ].shape[:2]
+                if values.shape == (point_count,):
+                    # LIBERO compact WDS stores time-invariant point metadata
+                    # once.  Use a zero-copy temporal view here; camera merge
+                    # or tensor conversion materializes it only when needed.
+                    values = np.broadcast_to(
+                        values[None], (frame_count, point_count)
+                    )
+                elif values.shape != (frame_count, point_count):
+                    raise ValueError(
+                        f"{optional_key} must have compact shape "
+                        f"{(point_count,)} or legacy temporal shape "
+                        f"{(frame_count, point_count)}; got {values.shape}"
+                    )
+                scene_data[camera_key][optional_field] = values
         # Add camera image data
         for img_key in ['initial_rgb', 'initial_depth', 'intrinsic', 'extrinsic']:
             key_new = f"{camera_key}_{img_key}"

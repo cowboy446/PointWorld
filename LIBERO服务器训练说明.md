@@ -38,6 +38,15 @@ flash-attn 版本不同，先按 `README.md` 完成环境验证。
 
 ## 3. 上传并检查数据
 
+若已有 replay 生成的 consolidated H5，可直接使用仓库内的紧凑转换脚本：
+
+```bash
+python scripts/convert_libero_h5_to_wds.py \
+  /absolute/path/to/libero_clips.h5 \
+  /absolute/path/to/pointworld_wds \
+  --train-fraction 0.8 --seed 512026
+```
+
 把生成的 `pointworld_wds` 整个目录上传到服务器，目录必须保留为：
 
 ```text
@@ -58,6 +67,25 @@ export STATS_DIR=$PWD/stats/libero_scene3_20260802
 ```
 
 脚本会拒绝相对 `DATA_DIR`，从而避免 WebDataset 在错误工作目录下解析路径。
+
+当前紧凑格式把以下四个随点不随时间变化的字段保存为 `(N,)`，不会在磁盘中
+重复 11 帧：
+
+- `scene_body_ids`
+- `scene_geom_ids`
+- `scene_entity_ids`
+- `scene_dense_preserve_mask`
+
+PointWorld 读取时会将其广播为 `(11,N)`，因此后续 grid sample、12,000 点 cap
+和模型输入行为不变；旧版已经保存为 `(11,N)` 的 tar 也仍然兼容。可抽查 tar：
+
+```bash
+tar -tvf "$DATA_DIR/train/$(ls "$DATA_DIR/train" | head -n 1)" \
+  | grep scene_dense_preserve_mask | head
+```
+
+256×256、11 帧的单视角 mask 文件应大致为 `N+128` 字节，而不是
+`11*N+128` 字节。
 
 ## 4. 计算 normalization statistics
 
@@ -112,6 +140,23 @@ BATCH_SIZE=2 NUM_WORKERS=8 EVAL_NUM_WORKERS=4 \
 DATA_DIR="$DATA_DIR" STATS_DIR="$STATS_DIR" \
   ./scripts/train_libero.sh
 ```
+
+### 四卡 DDP 训练（GPU 1–4）
+
+`scripts/train_libero_ddp.sh` 默认使用物理 GPU 1、2、3、4，并按每个 DDP
+进程 batch size 22 启动，因此默认全局有效 batch size 为 88：
+
+```bash
+CUDA_VISIBLE_DEVICES=1,2,3,4 NUM_GPUS=4 \
+BATCH_SIZE=22 NUM_WORKERS=16 EVAL_NUM_WORKERS=5 \
+EVAL_FREQ=-1 SAVE_FREQ=300 \
+DATA_DIR="$DATA_DIR" STATS_DIR="$STATS_DIR" \
+EXP_NAME=libero-scene3-uniform-cap12k-ddp4 \
+  ./scripts/train_libero_ddp.sh
+```
+
+这里 `EVAL_FREQ=-1` 表示关闭训练中评估；`SAVE_FREQ=300` 表示每 300 个全局
+batch 计数保存一次。若显存不足，先减小 `BATCH_SIZE`，不要改变数据点数规则。
 
 ## 7. 测试集评估
 

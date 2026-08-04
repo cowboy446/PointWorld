@@ -56,7 +56,8 @@ If you find this work useful in your research, please cite using the following B
 <a id="table-of-contents"></a>
 ## 🗂️ Table of Contents
 
-LIBERO 用户请先阅读 [`LIBERO服务器训练说明.md`](LIBERO服务器训练说明.md)。
+LIBERO 用户请先阅读 [`LIBERO服务器训练说明.md`](LIBERO服务器训练说明.md)，
+其中包含单卡和 GPU 1–4 四卡 DDP 启动命令。
 
 - [Important Notes](#important-notes)
 - [Setup](#setup)
