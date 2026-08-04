@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
-
+set -euo pipefail 
 # Example: evaluate a DROID WDS subset.
 #
 # This script has two phases:
@@ -12,17 +11,16 @@ set -euo pipefail
 # - The confidence file is written to:
 #     ${DATA_DIR}/test/expert_confidence-seed=42.h5
 # - GRID_SIZE and CONFIDENCE_THRES must match between annotation and evaluation.
-
-export CUDA_VISIBLE_DEVICES=0,4
-DOMAIN="droid"
-DATA_DIR="/backup/zhangrong/data/workspace/robot-wm/point-wm/PointWorld/restore_data/pointworld_droid_subset_restored/droid/wds"
-NORM_STATS_PATH="stats/droid"
+export CUDA_VISIBLE_DEVICES=1,2,3,4
+DOMAIN="behavior"
+DATA_DIR="/backup/zhangrong/data/workspace/robot-wm/point-wm/PointWorld/restore_data/pointworld_behavior_task001-006/wds"
+NORM_STATS_PATH="stats/droid_behavior"
 
 # Use the released confidence/filtering checkpoint for annotation if available.
-CONFIDENCE_MODEL_PATH="train_logs/pointworld_pretrain_droid_1190clips_small/model-last.pt"
+CONFIDENCE_MODEL_PATH="train_logs/0729_pretrain_behavior_task001-006_ddp4gpu/model-last.pt"
 
 # Use a scene-flow checkpoint for the actual evaluation.
-EVAL_MODEL_PATH="train_logs/pointworld_pretrain_droid_1190clips_small/model-last.pt"
+EVAL_MODEL_PATH="train_logs/0729_pretrain_behavior_task001-006_ddp4gpu/model-last.pt"
 BATCH_SIZE=1
 NUM_WORKERS=16
 EVAL_NUM_WORKERS=5
@@ -34,7 +32,7 @@ PREDICTOR_DIM="128"
 VIEWER_PORT="8097"
 
 # Set to 0 if you already have ${DATA_DIR}/test/expert_confidence-seed=42.h5.
-RUN_CONFIDENCE="0"
+RUN_CONFIDENCE="1"
 
 if [[ "${DATA_DIR}" != /* ]]; then
   echo "DATA_DIR must be an absolute path. Got: ${DATA_DIR}" >&2
@@ -79,7 +77,7 @@ python eval.py \
   --eval_num_workers="${EVAL_NUM_WORKERS}" \
   --eval_num_batches="${EVAL_NUM_BATCHES}" \
   --confidence_thres="${CONFIDENCE_THRES}" \
-  --eval_exp_name="pointworld_pretrain_droid_1190clips_small" \
+  --eval_exp_name="0729_pretrain_behavior_task001-006_ddp4gpu" \
   --eval_viz_num=-1 \
   --viewer_port="${VIEWER_PORT}" \
   --deterministic_data True 
